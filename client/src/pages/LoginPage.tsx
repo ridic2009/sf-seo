@@ -42,7 +42,7 @@ export function LoginPage() {
     return <Navigate to={from} replace />;
   }
 
-  const inputClass = 'w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white placeholder:text-gray-500 focus:border-amber-400/70 focus:outline-none';
+  const inputClass = 'w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3.5 text-sm text-white placeholder:text-gray-500 focus:border-amber-400/70 focus:outline-none';
 
   const handleSubmit = form.handleSubmit(async (values) => {
     try {
@@ -56,31 +56,29 @@ export function LoginPage() {
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#050608] px-6 py-10 text-white">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(245,158,11,0.18),transparent_28%),radial-gradient(circle_at_bottom_right,rgba(249,115,22,0.16),transparent_30%),linear-gradient(145deg,#050608_0%,#120b07_45%,#050608_100%)]" />
-      <div className="absolute left-1/2 top-1/2 h-[28rem] w-[28rem] -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/5 bg-white/[0.02] blur-3xl" />
-      <div className="absolute left-[12%] top-[18%] h-28 w-28 rounded-full bg-amber-400/10 blur-3xl" />
-      <div className="absolute bottom-[14%] right-[10%] h-36 w-36 rounded-full bg-orange-500/10 blur-3xl" />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(245,158,11,0.16),transparent_24%),radial-gradient(circle_at_bottom_right,rgba(249,115,22,0.14),transparent_28%),linear-gradient(145deg,#050608_0%,#0d0d13_40%,#180c07_100%)]" />
+      <div className="absolute left-1/2 top-1/2 h-[34rem] w-[34rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/[0.02] blur-3xl" />
+      <div className="absolute left-[10%] top-[16%] h-36 w-36 rounded-full bg-amber-400/8 blur-3xl" />
+      <div className="absolute bottom-[10%] right-[8%] h-44 w-44 rounded-full bg-orange-500/10 blur-3xl" />
 
-      <section className="relative w-full max-w-md rounded-[2rem] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] p-7 shadow-[0_30px_90px_rgba(0,0,0,0.45)] backdrop-blur-2xl md:p-8">
-        <div className="mb-8 flex items-center justify-center">
-          <div className="relative flex h-16 w-16 items-center justify-center rounded-[1.4rem] border border-amber-300/20 bg-[linear-gradient(180deg,rgba(251,191,36,0.22),rgba(245,158,11,0.08))] text-amber-200 shadow-[0_12px_32px_rgba(245,158,11,0.16)]">
-            <ShieldCheck className="absolute h-8 w-8 opacity-90" />
-            <LockKeyhole className="absolute bottom-3 right-3 h-3.5 w-3.5 text-amber-100" />
+      <section className="relative w-full max-w-sm rounded-[2rem] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.07),rgba(255,255,255,0.03))] p-7 shadow-[0_30px_90px_rgba(0,0,0,0.48)] backdrop-blur-2xl md:p-8">
+        <div className="mb-7 flex items-center justify-center">
+          <div className="relative flex h-16 w-16 items-center justify-center rounded-[1.4rem] border border-amber-300/15 bg-[linear-gradient(180deg,rgba(251,191,36,0.18),rgba(245,158,11,0.05))] text-amber-200 shadow-[0_12px_32px_rgba(245,158,11,0.12)]">
+            <ShieldCheck className="absolute h-7 w-7 opacity-90" />
+            <LockKeyhole className="absolute bottom-3 right-3 h-3 w-3 text-amber-100" />
           </div>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="mb-2 block text-sm text-gray-300">Логин</label>
-              <input className={inputClass} autoComplete="username" {...form.register('username')} />
+              <input className={inputClass} autoComplete="username" placeholder="Логин" {...form.register('username')} />
               {form.formState.errors.username?.message && (
                 <p className="mt-1 text-xs text-red-300">{form.formState.errors.username.message}</p>
               )}
             </div>
 
             <div>
-              <label className="mb-2 block text-sm text-gray-300">Пароль</label>
-              <input className={inputClass} type="password" autoComplete="current-password" {...form.register('password')} />
+              <input className={inputClass} type="password" autoComplete="current-password" placeholder="Пароль" {...form.register('password')} />
               {form.formState.errors.password?.message && (
                 <p className="mt-1 text-xs text-red-300">{form.formState.errors.password.message}</p>
               )}

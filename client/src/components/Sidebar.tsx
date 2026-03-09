@@ -1,7 +1,7 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import { LayoutDashboard, FileBox, Server, Rocket, Factory, Archive, Replace, LogOut } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { useAuthSession, useLogout } from '../api/auth';
+import { useLogout } from '../api/auth';
 import { useApiErrorMessage } from '../hooks/useApiErrorMessage';
 
 const links = [
@@ -16,7 +16,6 @@ const links = [
 export function Sidebar() {
   const navigate = useNavigate();
   const getApiErrorMessage = useApiErrorMessage();
-  const { data: session } = useAuthSession();
   const logout = useLogout();
 
   return (
@@ -50,10 +49,6 @@ export function Sidebar() {
       </nav>
 
       <div className="p-4 border-t border-gray-800">
-        <div className="mb-3 rounded-xl border border-gray-800 bg-gray-950/70 px-3 py-2">
-          <p className="text-[11px] uppercase tracking-[0.22em] text-gray-500">Администратор</p>
-          <p className="mt-1 text-sm font-semibold text-gray-200">{session?.username || 'admin'}</p>
-        </div>
         <button
           type="button"
           onClick={async () => {
