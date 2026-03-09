@@ -96,11 +96,12 @@ async function refreshSitePreview(siteId: number) {
     return meta;
   } catch (error: any) {
     const existingMeta = readSitePreviewMeta(siteId);
+    const probeMeta = error?.previewMeta as { statusCode?: number | null; capturedAt?: string; errorMessage?: string | null } | undefined;
 
     db.update(sites)
       .set({
-        previewStatus: existingMeta?.statusCode ?? null,
-        previewUpdatedAt: existingMeta?.capturedAt ?? site.previewUpdatedAt ?? null,
+        previewStatus: probeMeta?.statusCode ?? existingMeta?.statusCode ?? null,
+        previewUpdatedAt: probeMeta?.capturedAt ?? existingMeta?.capturedAt ?? site.previewUpdatedAt ?? new Date().toISOString(),
         previewError: error?.message || 'Не удалось обновить превью сайта',
       })
       .where(eq(sites.id, siteId))

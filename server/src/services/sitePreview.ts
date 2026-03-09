@@ -1,4 +1,5 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { chromium } from 'playwright-core';
@@ -16,6 +17,18 @@ export interface SitePreviewMeta {
   capturedAt: string;
   finalUrl: string;
   errorMessage: string | null;
+}
+
+interface SiteProbeResult {
+  statusCode: number | null;
+  finalUrl: string;
+  errorMessage: string | null;
+}
+
+interface BrowserLaunchDetails {
+  executablePath: string;
+  env: Record<string, string | undefined>;
+  userDataDir: string;
 }
 
 function ensurePreviewDir() {
@@ -49,11 +62,7 @@ export function readSitePreviewMeta(siteId: number): SitePreviewMeta | null {
   }
 }
 
-function findBrowserExecutable(): string | null {
-  if (process.env.SITE_PREVIEW_BROWSER_PATH && fs.existsSync(process.env.SITE_PREVIEW_BROWSER_PATH)) {
-    return process.env.SITE_PREVIEW_BROWSER_PATH;
-  }
-
+function getBrowserExecutableCandidates(): string[] {
   const candidates = process.platform === 'win32'
     ? [
         path.join(process.env['PROGRAMFILES(X86)'] || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
@@ -67,12 +76,102 @@ function findBrowserExecutable(): string | null {
         '/usr/bin/microsoft-edge-stable',
         '/usr/bin/google-chrome',
         '/usr/bin/google-chrome-stable',
+        '/opt/google/chrome/chrome',
+        '/opt/microsoft/msedge/msedge',
+        '/snap/chromium/current/usr/lib/chromium-browser/chrome',
+        '/var/lib/snapd/snap/chromium/current/usr/lib/chromium-browser/chrome',
+        '/usr/lib/chromium/chromium',
+        '/usr/lib/chromium/chrome',
+        '/usr/lib/chromium-browser/chromium-browser',
+        '/usr/lib/chromium-browser/chrome',
         '/usr/bin/chromium',
         '/usr/bin/chromium-browser',
         '/snap/bin/chromium',
       ];
 
-  return candidates.find((candidate) => candidate && fs.existsSync(candidate)) || null;
+  const configuredPath = process.env.SITE_PREVIEW_BROWSER_PATH;
+  const orderedCandidates = configuredPath ? [configuredPath, ...candidates] : candidates;
+  return orderedCandidates.filter((candidate, index, list) => candidate && fs.existsSync(candidate) && list.indexOf(candidate) === index);
+}
+
+function ensureDirectory(dirPath: string) {
+  fs.mkdirSync(dirPath, { recursive: true });
+  return dirPath;
+}
+
+function resolveRuntimeDir() {
+  const runtimeDirFromEnv = process.env.XDG_RUNTIME_DIR;
+  if (runtimeDirFromEnv && fs.existsSync(runtimeDirFromEnv)) {
+    return runtimeDirFromEnv;
+  }
+
+  if (typeof process.getuid === 'function') {
+    const systemRuntimeDir = `/run/user/${process.getuid()}`;
+    if (fs.existsSync(systemRuntimeDir)) {
+      return systemRuntimeDir;
+    }
+  }
+
+  const fallbackRuntimeDir = path.join(os.tmpdir(), `site-factory-runtime-${process.pid}`);
+  ensureDirectory(fallbackRuntimeDir);
+  fs.chmodSync(fallbackRuntimeDir, 0o700);
+  return fallbackRuntimeDir;
+}
+
+function createBrowserLaunchDetails(executablePath: string): BrowserLaunchDetails {
+  const homeDir = process.env.HOME || os.homedir();
+  const cacheDir = ensureDirectory(process.env.XDG_CACHE_HOME || path.join(homeDir, '.cache'));
+  const configDir = ensureDirectory(process.env.XDG_CONFIG_HOME || path.join(homeDir, '.config'));
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'site-factory-preview-browser-'));
+
+  return {
+    executablePath,
+    env: {
+      ...process.env,
+      HOME: homeDir,
+      XDG_CACHE_HOME: cacheDir,
+      XDG_CONFIG_HOME: configDir,
+      XDG_RUNTIME_DIR: resolveRuntimeDir(),
+    },
+    userDataDir,
+  };
+}
+
+function withPreviewMeta(error: Error, previewMeta: SitePreviewMeta) {
+  Object.assign(error, { previewMeta });
+  return error;
+}
+
+async function requestSite(url: string) {
+  const response = await fetch(url, {
+    redirect: 'follow',
+    signal: AbortSignal.timeout(15000),
+  });
+
+  return {
+    statusCode: response.status,
+    finalUrl: response.url || url,
+    errorMessage: null,
+  } satisfies SiteProbeResult;
+}
+
+export async function probeSitePreviewTarget(domain: string): Promise<SiteProbeResult> {
+  const httpsUrl = `https://${domain}`;
+
+  try {
+    return await requestSite(httpsUrl);
+  } catch (httpsError: any) {
+    const httpUrl = `http://${domain}`;
+    try {
+      return await requestSite(httpUrl);
+    } catch (httpError: any) {
+      return {
+        statusCode: null,
+        finalUrl: httpUrl,
+        errorMessage: httpError?.message || httpsError?.message || 'Unknown error',
+      };
+    }
+  }
 }
 
 async function writePreviewFiles(siteId: number, meta: SitePreviewMeta, screenshotBuffer: Buffer) {
@@ -81,42 +180,73 @@ async function writePreviewFiles(siteId: number, meta: SitePreviewMeta, screensh
 }
 
 export async function captureSitePreview(target: SitePreviewTarget): Promise<SitePreviewMeta> {
-  const browserPath = findBrowserExecutable();
-  if (!browserPath) {
-    throw new Error('Не найден локальный браузер для снятия превью. Укажите SITE_PREVIEW_BROWSER_PATH или установите Edge/Chrome.');
+  const probe = await probeSitePreviewTarget(target.domain);
+  const baseMeta: SitePreviewMeta = {
+    statusCode: probe.statusCode,
+    capturedAt: new Date().toISOString(),
+    finalUrl: probe.finalUrl,
+    errorMessage: probe.errorMessage,
+  };
+
+  const browserCandidates = getBrowserExecutableCandidates();
+  if (browserCandidates.length === 0) {
+    throw withPreviewMeta(
+      new Error('Не найден локальный браузер для снятия превью. Укажите SITE_PREVIEW_BROWSER_PATH или установите Edge/Chrome.'),
+      baseMeta,
+    );
   }
 
-  const browser = await chromium.launch({
-    executablePath: browserPath,
-    headless: true,
-    args: ['--disable-dev-shm-usage', '--disable-gpu', '--ignore-certificate-errors', '--no-sandbox'],
-  });
+  let browser: Awaited<ReturnType<typeof chromium.launchPersistentContext>> | null = null;
+  let launchDetails: BrowserLaunchDetails | null = null;
+  const launchErrors: string[] = [];
 
-  const context = await browser.newContext({
-    viewport: { width: 1440, height: 900 },
-    ignoreHTTPSErrors: true,
-    deviceScaleFactor: 1,
-  });
+  for (const browserPath of browserCandidates) {
+    const currentLaunchDetails = createBrowserLaunchDetails(browserPath);
 
-  const page = await context.newPage();
-  let statusCode: number | null = null;
-  let errorMessage: string | null = null;
-  let finalUrl = `https://${target.domain}`;
+    try {
+      browser = await chromium.launchPersistentContext(currentLaunchDetails.userDataDir, {
+        executablePath: browserPath,
+        headless: true,
+        env: currentLaunchDetails.env,
+        viewport: { width: 1440, height: 900 },
+        ignoreHTTPSErrors: true,
+        deviceScaleFactor: 1,
+        args: [
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--ignore-certificate-errors',
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--no-zygote',
+        ],
+      });
+      launchDetails = currentLaunchDetails;
+      break;
+    } catch (error: any) {
+      launchErrors.push(`${browserPath}: ${error?.message || 'launch failed'}`);
+      fs.rmSync(currentLaunchDetails.userDataDir, { recursive: true, force: true });
+    }
+  }
+
+  if (!browser || !launchDetails) {
+    throw withPreviewMeta(
+      new Error(`Не удалось запустить браузер для генерации превью. Проверены пути: ${launchErrors.join(' | ')}`),
+      baseMeta,
+    );
+  }
+
+  const page = browser.pages()[0] || await browser.newPage();
+  let statusCode: number | null = baseMeta.statusCode;
+  let errorMessage: string | null = baseMeta.errorMessage;
+  let finalUrl = baseMeta.finalUrl;
 
   try {
     let response = null;
 
     try {
       response = await page.goto(finalUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
-    } catch (httpsError: any) {
-      errorMessage = httpsError?.message || 'HTTPS request failed';
-      finalUrl = `http://${target.domain}`;
-      try {
-        response = await page.goto(finalUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
-        errorMessage = null;
-      } catch (httpError: any) {
-        errorMessage = httpError?.message || errorMessage;
-      }
+    } catch (navigationError: any) {
+      errorMessage = navigationError?.message || errorMessage || 'Navigation failed';
     }
 
     if (response) {
@@ -145,7 +275,9 @@ export async function captureSitePreview(target: SitePreviewTarget): Promise<Sit
     await writePreviewFiles(target.id, meta, screenshotBuffer);
     return meta;
   } finally {
-    await context.close();
     await browser.close();
+    if (launchDetails) {
+      fs.rmSync(launchDetails.userDataDir, { recursive: true, force: true });
+    }
   }
 }
