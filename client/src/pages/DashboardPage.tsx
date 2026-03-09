@@ -347,7 +347,7 @@ export function DashboardPage() {
                 <div className="text-xs text-gray-500">{row.deployStep}</div>
               )}
               {row.previewError && row.status === 'deployed' && (
-                <div className="max-w-[260px] break-words text-xs text-amber-400">{row.previewError}</div>
+                <div className="line-clamp-3 max-w-[260px] break-words text-xs text-amber-400" title={row.previewError}>{row.previewError}</div>
               )}
               {row.errorMessage && (
                 <div className="max-w-[260px] break-words text-xs text-red-400">{row.errorMessage}</div>

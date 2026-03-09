@@ -2,7 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { chromium } from 'playwright-core';
+import { chromium, type Page } from 'playwright-core';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SITE_PREVIEWS_DIR = path.resolve(__dirname, '../../data/previews/sites');
@@ -156,6 +156,25 @@ function summarizeBrowserLaunchError(message: string) {
   return `Не удалось запустить браузер для генерации превью: ${hints.join('; ')}.`;
 }
 
+function summarizePreviewErrorMessage(message: string) {
+  if (!message) {
+    return 'Не удалось обновить превью сайта.';
+  }
+
+  const firstLine = message.split('\n')[0]?.trim() || message.trim();
+  const withoutCallLog = firstLine.split('Call log:')[0]?.trim() || firstLine;
+
+  if (withoutCallLog.includes('Timeout 30000ms exceeded')) {
+    return 'Не удалось снять screenshot: страница слишком долго готовилась к снимку.';
+  }
+
+  if (withoutCallLog.includes('Target page, context or browser has been closed')) {
+    return 'Не удалось снять screenshot: Chromium закрыл страницу во время снимка.';
+  }
+
+  return withoutCallLog;
+}
+
 function withPreviewMeta(error: Error, previewMeta: SitePreviewMeta) {
   Object.assign(error, { previewMeta });
   return error;
@@ -196,6 +215,42 @@ export async function probeSitePreviewTarget(domain: string): Promise<SiteProbeR
 async function writePreviewFiles(siteId: number, meta: SitePreviewMeta, screenshotBuffer: Buffer) {
   fs.writeFileSync(getPreviewImagePath(siteId), screenshotBuffer);
   fs.writeFileSync(getPreviewMetaPath(siteId), JSON.stringify(meta, null, 2), 'utf-8');
+}
+
+async function captureScreenshotViaCdp(page: Page): Promise<Buffer> {
+  const session = await page.context().newCDPSession(page);
+
+  try {
+    const metrics = await session.send('Page.getLayoutMetrics');
+    const contentWidth = Math.max(1440, Math.ceil(metrics.contentSize?.width || 1440));
+    const contentHeight = Math.max(900, Math.ceil(metrics.contentSize?.height || 900));
+    const width = Math.min(contentWidth, 1440);
+    const height = Math.min(contentHeight, 12000);
+
+    await session.send('Emulation.setDeviceMetricsOverride', {
+      mobile: false,
+      width,
+      height,
+      deviceScaleFactor: 1,
+      screenWidth: width,
+      screenHeight: height,
+    });
+
+    const result = await session.send('Page.captureScreenshot', {
+      format: 'png',
+      fromSurface: true,
+      captureBeyondViewport: true,
+    });
+
+    return Buffer.from(result.data, 'base64');
+  } finally {
+    try {
+      await session.send('Emulation.clearDeviceMetricsOverride');
+    } catch {
+      // Ignore cleanup failures.
+    }
+    await session.detach();
+  }
 }
 
 export async function captureSitePreview(target: SitePreviewTarget): Promise<SitePreviewMeta> {
@@ -285,12 +340,12 @@ export async function captureSitePreview(target: SitePreviewTarget): Promise<Sit
       );
     }
 
-    const screenshotBuffer = await page.screenshot({ type: 'png', fullPage: true });
+    const screenshotBuffer = await captureScreenshotViaCdp(page);
     const meta: SitePreviewMeta = {
       statusCode,
       capturedAt: new Date().toISOString(),
       finalUrl,
-      errorMessage,
+      errorMessage: errorMessage ? summarizePreviewErrorMessage(errorMessage) : null,
     };
 
     await writePreviewFiles(target.id, meta, screenshotBuffer);

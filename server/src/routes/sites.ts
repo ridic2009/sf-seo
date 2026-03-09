@@ -43,6 +43,22 @@ function appendDeployLog(siteId: number, step: string, message: string, status: 
     .run();
 }
 
+function summarizeSitePreviewError(error: any): string {
+  const rawMessage = String(error?.message || 'Не удалось обновить превью сайта');
+  const firstLine = rawMessage.split('\n')[0]?.trim() || rawMessage;
+  const compactMessage = firstLine.split('Call log:')[0]?.trim() || firstLine;
+
+  if (compactMessage.includes('Timeout 30000ms exceeded')) {
+    return 'Не удалось снять screenshot: страница слишком долго готовилась к снимку.';
+  }
+
+  if (compactMessage.includes('Target page, context or browser has been closed')) {
+    return 'Не удалось снять screenshot: Chromium закрыл страницу во время снимка.';
+  }
+
+  return compactMessage;
+}
+
 function formatProgressBar(percent?: number): string {
   const normalized = Math.max(0, Math.min(100, percent ?? 0));
   const filled = Math.round(normalized / 10);
@@ -97,17 +113,18 @@ async function refreshSitePreview(siteId: number) {
   } catch (error: any) {
     const existingMeta = readSitePreviewMeta(siteId);
     const probeMeta = error?.previewMeta as { statusCode?: number | null; capturedAt?: string; errorMessage?: string | null } | undefined;
+    const previewErrorMessage = summarizeSitePreviewError(error);
 
     db.update(sites)
       .set({
         previewStatus: probeMeta?.statusCode ?? existingMeta?.statusCode ?? null,
         previewUpdatedAt: probeMeta?.capturedAt ?? existingMeta?.capturedAt ?? site.previewUpdatedAt ?? new Date().toISOString(),
-        previewError: error?.message || 'Не удалось обновить превью сайта',
+        previewError: previewErrorMessage,
       })
       .where(eq(sites.id, siteId))
       .run();
 
-    throw error;
+    throw new Error(previewErrorMessage);
   }
 }
 
