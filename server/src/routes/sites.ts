@@ -5,9 +5,10 @@ import { eq } from 'drizzle-orm';
 import { processTemplate } from '../services/templater.js';
 import { uploadDirectory, executeSSHCommand, clearRemoteDirectory, type DeployProgressEvent } from '../services/deployer.js';
 import { getPanelAdapter } from '../panels/index.js';
-import { captureSitePreview, getSitePreviewImagePath } from '../services/sitePreview.js';
+import { captureSitePreview, getSitePreviewImagePath, readSitePreviewMeta } from '../services/sitePreview.js';
 import { listRemoteEditableFiles, readRemoteTextFile, writeRemoteTextFile, searchRemoteFiles, replaceRemoteFiles } from '../services/remoteFiles.js';
 import { validateSearchQuery } from '../services/codeEditor.js';
+import { waitForHestiaDomain } from '../services/hestia.js';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -59,10 +60,9 @@ function formatBytes(size?: number): string {
   return `${(size / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-async function isHestiaDomainRegistered(server: typeof servers.$inferSelect, domain: string): Promise<boolean> {
+async function checkHestiaDomainRegistration(server: typeof servers.$inferSelect, domain: string) {
   const panelUser = server.panelUser || server.username;
-  const configPath = `/usr/local/hestia/data/users/${panelUser}/web/${domain}.conf`;
-  const result = await executeSSHCommand(
+  return waitForHestiaDomain(
     {
       host: server.host,
       port: server.port,
@@ -71,10 +71,9 @@ async function isHestiaDomainRegistered(server: typeof servers.$inferSelect, dom
       password: server.password ?? undefined,
       privateKey: server.privateKey ?? undefined,
     },
-    `test -f ${configPath} && echo __SF_HST_EXISTS__ || echo __SF_HST_MISSING__`,
+    panelUser,
+    domain,
   );
-
-  return result.includes('__SF_HST_EXISTS__');
 }
 
 async function refreshSitePreview(siteId: number) {
@@ -83,17 +82,32 @@ async function refreshSitePreview(siteId: number) {
     throw new Error('Site not found');
   }
 
-  const meta = await captureSitePreview({ id: site.id, domain: site.domain });
-  db.update(sites)
-    .set({
-      previewStatus: meta.statusCode,
-      previewUpdatedAt: meta.capturedAt,
-      previewError: meta.errorMessage,
-    })
-    .where(eq(sites.id, siteId))
-    .run();
+  try {
+    const meta = await captureSitePreview({ id: site.id, domain: site.domain });
+    db.update(sites)
+      .set({
+        previewStatus: meta.statusCode,
+        previewUpdatedAt: meta.capturedAt,
+        previewError: meta.errorMessage,
+      })
+      .where(eq(sites.id, siteId))
+      .run();
 
-  return meta;
+    return meta;
+  } catch (error: any) {
+    const existingMeta = readSitePreviewMeta(siteId);
+
+    db.update(sites)
+      .set({
+        previewStatus: existingMeta?.statusCode ?? null,
+        previewUpdatedAt: existingMeta?.capturedAt ?? site.previewUpdatedAt ?? null,
+        previewError: error?.message || 'Не удалось обновить превью сайта',
+      })
+      .where(eq(sites.id, siteId))
+      .run();
+
+    throw error;
+  }
 }
 
 interface DeploySiteOptions {
@@ -185,15 +199,17 @@ async function deploySiteById(siteId: number, app: any, options: DeploySiteOptio
 
       if (server.panelType === 'hestia') {
         try {
-          const registered = await isHestiaDomainRegistered(server, site.domain);
+          const registration = await checkHestiaDomainRegistration(server, site.domain);
 
-          if (!registered) {
-            throw new Error(`Домен ${site.domain} не зарегистрирован в Hestia после ошибки панели`);
+          if (!registration.exists) {
+            const details = registration.diagnostics.join(' | ') || 'нет диагностического вывода';
+            appendDeployLog(siteId, 'Создание домена', `Диагностика Hestia: ${details}`);
+            throw new Error(`Домен ${site.domain} не зарегистрирован в Hestia после ошибки панели: ${details}`);
           }
 
           appendDeployLog(siteId, 'Создание домена', `Домен ${site.domain} найден в Hestia после повторной проверки`);
-        } catch {
-          throw new Error(`Домен ${site.domain} не появился в Hestia. Загрузка файлов остановлена, чтобы не пометить сайт как развёрнутый ошибочно.`);
+        } catch (error: any) {
+          throw new Error(error?.message || `Домен ${site.domain} не появился в Hestia. Загрузка файлов остановлена, чтобы не пометить сайт как развёрнутый ошибочно.`);
         }
       }
     }

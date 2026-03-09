@@ -1,5 +1,6 @@
 import { PanelAdapter } from './index.js';
 import { ServerConnectionConfig, executeSSHCommand } from '../services/deployer.js';
+import { probeHestiaDomain, waitForHestiaDomain } from '../services/hestia.js';
 
 export class HestiaPanel implements PanelAdapter {
   constructor(
@@ -33,11 +34,9 @@ export class HestiaPanel implements PanelAdapter {
   }
 
   private async domainExists(domain: string): Promise<boolean> {
-    const user = this.panelUser;
-
     try {
-      await this.runHestiaCommand('v-list-web-domain', [user, domain]);
-      return true;
+      const result = await probeHestiaDomain(this.conn, this.panelUser, domain);
+      return result.exists;
     } catch {
       return false;
     }
@@ -78,8 +77,10 @@ export class HestiaPanel implements PanelAdapter {
       await this.runHestiaCommand('v-add-web-domain', [user, domain]);
     }
 
-    if (!(await this.domainExists(domain))) {
-      throw new Error(`Hestia did not register domain ${domain} after create command`);
+    const registration = await waitForHestiaDomain(this.conn, user, domain);
+    if (!registration.exists) {
+      const details = registration.diagnostics.join(' | ') || 'no diagnostic output';
+      throw new Error(`Hestia did not register domain ${domain} after create command: ${details}`);
     }
 
     // Don't block deploy on Let's Encrypt issuance. DNS may still propagate.

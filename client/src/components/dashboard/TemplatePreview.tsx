@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { getTemplatePreviewUrl } from '../../api/templates';
 import { getSitePreviewUrl } from '../../api/sites';
 import type { Site } from '../../types';
@@ -11,16 +11,24 @@ interface TemplatePreviewProps {
 export function TemplatePreview({ site, onOpen }: TemplatePreviewProps) {
   const [imageError, setImageError] = useState(false);
 
-  const livePreviewUrl = site.status === 'deployed'
+  const isDeployed = site.status === 'deployed';
+  const livePreviewUrl = isDeployed
     ? getSitePreviewUrl(site.id, site.previewUpdatedAt || site.deployedAt || null)
     : null;
-  const templatePreviewUrl = site.templateId ? getTemplatePreviewUrl(site.templateId) : null;
-  const previewUrl = !imageError && livePreviewUrl ? livePreviewUrl : templatePreviewUrl;
+  const templatePreviewUrl = !isDeployed && site.templateId ? getTemplatePreviewUrl(site.templateId) : null;
+  const previewUrl = imageError ? null : livePreviewUrl || templatePreviewUrl;
+
+  useEffect(() => {
+    setImageError(false);
+  }, [site.id, livePreviewUrl, templatePreviewUrl]);
 
   if (!previewUrl) {
     return (
-      <div className="flex h-12 w-20 items-center justify-center rounded-lg border border-dashed border-gray-700 bg-gray-950/60 text-[10px] uppercase tracking-[0.2em] text-gray-500">
-        Нет превью
+      <div
+        className="flex h-12 w-20 items-center justify-center rounded-lg border border-dashed border-gray-700 bg-gray-950/60 px-2 text-center text-[10px] uppercase tracking-[0.2em] text-gray-500"
+        title={site.previewError || (isDeployed ? 'Не удалось загрузить live preview сайта' : 'Нет превью')}
+      >
+        {isDeployed ? 'Превью сайта недоступно' : 'Нет превью'}
       </div>
     );
   }

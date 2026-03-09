@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from 'react';
 import { Loader2, RefreshCcw, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useRefreshSitePreview } from '../../api/sites';
@@ -14,6 +15,20 @@ interface SitePreviewModalProps {
 export function SitePreviewModal({ preview, onClose }: SitePreviewModalProps) {
   const refreshSitePreview = useRefreshSitePreview();
   const getApiErrorMessage = useApiErrorMessage();
+  const [refreshToken, setRefreshToken] = useState(0);
+  const isLivePreview = preview.site.status === 'deployed';
+
+  useEffect(() => {
+    setRefreshToken(0);
+  }, [preview.site.id, preview.url]);
+
+  const imageUrl = useMemo(() => {
+    if (!refreshToken) {
+      return preview.url;
+    }
+
+    return `${preview.url}${preview.url.includes('?') ? '&' : '?'}t=${refreshToken}`;
+  }, [preview.url, refreshToken]);
 
   return (
     <ModalOverlay onClose={onClose} ariaLabel="Полное превью сайта" className="z-[110] bg-black/80 p-4">
@@ -24,12 +39,15 @@ export function SitePreviewModal({ preview, onClose }: SitePreviewModalProps) {
             <p className="mt-1 text-sm text-gray-500">{preview.site.domain}</p>
           </div>
           <div className="flex items-center gap-2">
-            {preview.site.serverId && (
+            {isLivePreview && preview.site.serverId && (
               <button
                 type="button"
                 onClick={() => {
                   refreshSitePreview.mutate(preview.site.id, {
-                    onSuccess: () => toast.success(`Превью ${preview.site.domain} обновлено`),
+                    onSuccess: () => {
+                      setRefreshToken(Date.now());
+                      toast.success(`Превью ${preview.site.domain} обновлено`);
+                    },
                     onError: (error) => toast.error(getApiErrorMessage(error, 'Ошибка обновления превью')),
                   });
                 }}
@@ -41,7 +59,7 @@ export function SitePreviewModal({ preview, onClose }: SitePreviewModalProps) {
               </button>
             )}
             <a
-              href={preview.url}
+              href={imageUrl}
               target="_blank"
               rel="noopener noreferrer"
               aria-label={`Открыть изображение сайта ${preview.site.domain} в новой вкладке`}
@@ -57,7 +75,7 @@ export function SitePreviewModal({ preview, onClose }: SitePreviewModalProps) {
 
         <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4">
           <div className="rounded-xl border border-gray-800 bg-gray-900 p-3">
-            <img src={preview.url} alt={preview.site.domain} className="h-auto w-full rounded-lg" />
+            <img src={imageUrl} alt={preview.site.domain} className="h-auto w-full rounded-lg" />
           </div>
         </div>
       </div>

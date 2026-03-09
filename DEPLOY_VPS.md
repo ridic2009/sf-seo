@@ -15,8 +15,8 @@
 
 Проверь и замени следующие значения:
 
-- YOUR_GITHUB_REPO_URL: URL твоего GitHub-репозитория, например https://github.com/username/site-factory.git
-- YOUR_GITHUB_SSH_URL: SSH URL репозитория, если пушишь по SSH, например git@github.com:username/site-factory.git
+- YOUR_GITHUB_REPO_URL: URL твоего GitHub-репозитория, например https://github.com/username/sf-seo.git
+- YOUR_GITHUB_SSH_URL: SSH URL репозитория, если пушишь по SSH, например git@github.com:username/sf-seo.git
 - YOUR_GITHUB_USERNAME: имя пользователя GitHub
 - YOUR_GITHUB_EMAIL: почта GitHub для коммитов
 - VPS_IP: IP твоего сервера
@@ -197,8 +197,8 @@ npm -v
 ```bash
 sudo -iu deploy
 cd /home/deploy
-git clone YOUR_GITHUB_REPO_URL site-factory
-cd /home/deploy/site-factory
+git clone YOUR_GITHUB_REPO_URL sf-seo
+cd /home/deploy/sf-seo
 ```
 
 Если используешь SSH-репозиторий, сначала добавь deploy-ключ на сервер и в GitHub.
@@ -206,7 +206,7 @@ cd /home/deploy/site-factory
 ## 11. Установка зависимостей и сборка
 
 ```bash
-cd /home/deploy/site-factory
+cd /home/deploy/sf-seo
 npm install
 cd server
 npm install
@@ -219,14 +219,14 @@ npm run build
 Проверка, что сборка успешна:
 
 ```bash
-test -f /home/deploy/site-factory/server/dist/index.js && echo "server build ok"
-test -f /home/deploy/site-factory/client/dist/index.html && echo "client build ok"
+test -f /home/deploy/sf-seo/server/dist/index.js && echo "server build ok"
+test -f /home/deploy/sf-seo/client/dist/index.html && echo "client build ok"
 ```
 
 ## 12. Создание production env
 
 ```bash
-cd /home/deploy/site-factory
+cd /home/deploy/sf-seo
 cp .env.example .env
 nano .env
 ```
@@ -255,7 +255,7 @@ AUTH_LOGIN_WINDOW_MINUTES=15
 ## 13. Тестовый запуск приложения без systemd
 
 ```bash
-cd /home/deploy/site-factory/server
+cd /home/deploy/sf-seo/server
 node dist/index.js
 ```
 
@@ -274,7 +274,7 @@ curl http://127.0.0.1:3001/api/health
 Создай unit-файл:
 
 ```bash
-sudo nano /etc/systemd/system/site-factory.service
+sudo nano /etc/systemd/system/sf-seo.service
 ```
 
 Вставь:
@@ -288,9 +288,9 @@ After=network.target
 Type=simple
 User=deploy
 Group=deploy
-WorkingDirectory=/home/deploy/site-factory/server
-EnvironmentFile=/home/deploy/site-factory/.env
-ExecStart=/usr/bin/node /home/deploy/site-factory/server/dist/index.js
+WorkingDirectory=/home/deploy/sf-seo/server
+EnvironmentFile=/home/deploy/sf-seo/.env
+ExecStart=/usr/bin/node /home/deploy/sf-seo/server/dist/index.js
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -304,15 +304,15 @@ WantedBy=multi-user.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable site-factory
-sudo systemctl start site-factory
-sudo systemctl status site-factory --no-pager
+sudo systemctl enable sf-seo
+sudo systemctl start sf-seo
+sudo systemctl status sf-seo --no-pager
 ```
 
 Логи:
 
 ```bash
-sudo journalctl -u site-factory -n 100 --no-pager
+sudo journalctl -u sf-seo -n 100 --no-pager
 ```
 
 ## 15. Конфиг Nginx для домена
@@ -410,13 +410,13 @@ curl https://sf-seo.sbs/api/health
 
 Важно: все эти данные хранятся в локальной SQLite-базе на VPS:
 
-- /home/deploy/site-factory/server/data/site-factory.db
+- /home/deploy/sf-seo/server/data/site-factory.db
 
 Сделай резервную копию сразу после первичной настройки:
 
 ```bash
 mkdir -p /home/deploy/backups
-cp /home/deploy/site-factory/server/data/site-factory.db /home/deploy/backups/site-factory.db.$(date +%F-%H%M%S)
+cp /home/deploy/sf-seo/server/data/site-factory.db /home/deploy/backups/site-factory.db.$(date +%F-%H%M%S)
 ```
 
 ## 19. Обновление приложения после новых коммитов
@@ -424,7 +424,7 @@ cp /home/deploy/site-factory/server/data/site-factory.db /home/deploy/backups/si
 Под пользователем deploy:
 
 ```bash
-cd /home/deploy/site-factory
+cd /home/deploy/sf-seo
 git pull origin main
 npm install
 cd server
@@ -433,8 +433,8 @@ cd ../client
 npm install
 cd ..
 npm run build
-sudo systemctl restart site-factory
-sudo systemctl status site-factory --no-pager
+sudo systemctl restart sf-seo
+sudo systemctl status sf-seo --no-pager
 ```
 
 ## 20. Полезные команды диагностики
@@ -442,13 +442,13 @@ sudo systemctl status site-factory --no-pager
 Статус сервиса:
 
 ```bash
-sudo systemctl status site-factory --no-pager
+sudo systemctl status sf-seo --no-pager
 ```
 
 Логи backend:
 
 ```bash
-sudo journalctl -u site-factory -f
+sudo journalctl -u sf-seo -f
 ```
 
 Проверка порта:
@@ -484,7 +484,7 @@ dig +short sf-seo.sbs
 - DNS A-запись sf-seo.sbs указывает на VPS
 - репозиторий запушен без server/data и без .env
 - на VPS установлен Node.js 22, nginx, chromium-browser, certbot
-- файл /home/deploy/site-factory/.env создан
+- файл /home/deploy/sf-seo/.env создан
 - ADMIN_PASSWORD_HASH и AUTH_SESSION_SECRET заполнены
 - systemd service запущен
 - nginx config активирован
