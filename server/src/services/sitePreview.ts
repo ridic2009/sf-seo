@@ -28,7 +28,6 @@ interface SiteProbeResult {
 interface BrowserLaunchDetails {
   executablePath: string;
   env: Record<string, string | undefined>;
-  userDataDir: string;
 }
 
 function ensurePreviewDir() {
@@ -122,7 +121,6 @@ function createBrowserLaunchDetails(executablePath: string): BrowserLaunchDetail
   const homeDir = process.env.HOME || os.homedir();
   const cacheDir = ensureDirectory(process.env.XDG_CACHE_HOME || path.join(homeDir, '.cache'));
   const configDir = ensureDirectory(process.env.XDG_CONFIG_HOME || path.join(homeDir, '.config'));
-  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'site-factory-preview-browser-'));
 
   return {
     executablePath,
@@ -133,8 +131,29 @@ function createBrowserLaunchDetails(executablePath: string): BrowserLaunchDetail
       XDG_CONFIG_HOME: configDir,
       XDG_RUNTIME_DIR: resolveRuntimeDir(),
     },
-    userDataDir,
   };
+}
+
+function summarizeBrowserLaunchError(message: string) {
+  const hints: string[] = [];
+
+  if (message.includes('libgbm.so.1')) {
+    hints.push('отсутствует пакет libgbm1');
+  }
+
+  if (message.includes('xdg-settings: not found')) {
+    hints.push('отсутствует пакет xdg-utils');
+  }
+
+  if (message.includes('cannot set memlock limit')) {
+    hints.push('snap chromium не смог выставить memlock в окружении systemd');
+  }
+
+  if (hints.length === 0) {
+    return message;
+  }
+
+  return `Не удалось запустить браузер для генерации превью: ${hints.join('; ')}.`;
 }
 
 function withPreviewMeta(error: Error, previewMeta: SitePreviewMeta) {
@@ -196,7 +215,7 @@ export async function captureSitePreview(target: SitePreviewTarget): Promise<Sit
     );
   }
 
-  let browser: Awaited<ReturnType<typeof chromium.launchPersistentContext>> | null = null;
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
   let launchDetails: BrowserLaunchDetails | null = null;
   const launchErrors: string[] = [];
 
@@ -204,13 +223,10 @@ export async function captureSitePreview(target: SitePreviewTarget): Promise<Sit
     const currentLaunchDetails = createBrowserLaunchDetails(browserPath);
 
     try {
-      browser = await chromium.launchPersistentContext(currentLaunchDetails.userDataDir, {
+      browser = await chromium.launch({
         executablePath: browserPath,
         headless: true,
         env: currentLaunchDetails.env,
-        viewport: { width: 1440, height: 900 },
-        ignoreHTTPSErrors: true,
-        deviceScaleFactor: 1,
         args: [
           '--disable-dev-shm-usage',
           '--disable-gpu',
@@ -224,18 +240,23 @@ export async function captureSitePreview(target: SitePreviewTarget): Promise<Sit
       break;
     } catch (error: any) {
       launchErrors.push(`${browserPath}: ${error?.message || 'launch failed'}`);
-      fs.rmSync(currentLaunchDetails.userDataDir, { recursive: true, force: true });
     }
   }
 
   if (!browser || !launchDetails) {
     throw withPreviewMeta(
-      new Error(`Не удалось запустить браузер для генерации превью. Проверены пути: ${launchErrors.join(' | ')}`),
+      new Error(summarizeBrowserLaunchError(launchErrors.join(' | '))),
       baseMeta,
     );
   }
 
-  const page = browser.pages()[0] || await browser.newPage();
+  const context = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    ignoreHTTPSErrors: true,
+    deviceScaleFactor: 1,
+  });
+
+  const page = await context.newPage();
   let statusCode: number | null = baseMeta.statusCode;
   let errorMessage: string | null = baseMeta.errorMessage;
   let finalUrl = baseMeta.finalUrl;
@@ -275,9 +296,7 @@ export async function captureSitePreview(target: SitePreviewTarget): Promise<Sit
     await writePreviewFiles(target.id, meta, screenshotBuffer);
     return meta;
   } finally {
+    await context.close();
     await browser.close();
-    if (launchDetails) {
-      fs.rmSync(launchDetails.userDataDir, { recursive: true, force: true });
-    }
   }
 }
