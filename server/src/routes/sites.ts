@@ -3,12 +3,13 @@ import { db } from '../db/index.js';
 import { sites, templates, servers } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { processTemplate } from '../services/templater.js';
-import { uploadDirectory, executeSSHCommand, clearRemoteDirectory, type DeployProgressEvent } from '../services/deployer.js';
+import { uploadDirectory, executeSSHCommand, clearRemoteDirectory, syncRemoteOwnership, type DeployProgressEvent } from '../services/deployer.js';
 import { getPanelAdapter } from '../panels/index.js';
 import { captureSitePreview, getSitePreviewImagePath, readSitePreviewMeta } from '../services/sitePreview.js';
 import { listRemoteEditableFiles, readRemoteTextFile, writeRemoteTextFile, searchRemoteFiles, replaceRemoteFiles } from '../services/remoteFiles.js';
 import { validateSearchQuery } from '../services/codeEditor.js';
 import { waitForHestiaDomain } from '../services/hestia.js';
+import { normalizeAndValidateDomain, normalizeDomainInput } from '../services/domain.js';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -30,6 +31,34 @@ function isMissingRemoteDomainError(message?: string): boolean {
     || normalized.includes('does not exist')
     || normalized.includes('not found')
     || normalized.includes('already removed');
+}
+
+function isInvalidDomainFormatError(message?: string): boolean {
+  if (!message) {
+    return false;
+  }
+
+  const normalized = message.toLowerCase();
+  return normalized.includes('invalid domain format')
+    || normalized.includes('domain should be in format')
+    || normalized.includes('домен должен быть в формате');
+}
+
+function getCanonicalSiteDomain(site: Pick<typeof sites.$inferSelect, 'id' | 'domain'>): string {
+  const normalizedDomain = normalizeAndValidateDomain(site.domain);
+
+  if (normalizedDomain !== site.domain) {
+    const conflict = db.select({ id: sites.id }).from(sites).where(eq(sites.domain, normalizedDomain)).get();
+    if (!conflict || conflict.id === site.id) {
+      db.update(sites)
+        .set({ domain: normalizedDomain })
+        .where(eq(sites.id, site.id))
+        .run();
+      site.domain = normalizedDomain;
+    }
+  }
+
+  return normalizedDomain;
 }
 
 function appendDeployLog(siteId: number, step: string, message: string, status: 'pending' | 'deploying' | 'deployed' | 'error' = 'deploying') {
@@ -97,12 +126,13 @@ async function refreshSitePreview(siteId: number) {
   if (!site) {
     throw new Error('Site not found');
   }
+  const normalizedDomain = getCanonicalSiteDomain(site);
 
   const previewImagePath = getSitePreviewImagePath(siteId);
   const hasExistingPreviewImage = fs.existsSync(previewImagePath);
 
   try {
-    const meta = await captureSitePreview({ id: site.id, domain: site.domain });
+    const meta = await captureSitePreview({ id: site.id, domain: normalizedDomain || normalizeDomainInput(site.domain) || site.domain });
     db.update(sites)
       .set({
         previewStatus: meta.statusCode,
@@ -149,6 +179,7 @@ async function deploySiteById(siteId: number, app: any, options: DeploySiteOptio
   if (!site) {
     throw new Error('Site not found');
   }
+  const normalizedDomain = getCanonicalSiteDomain(site);
   const targetServerId = options.overrideServerId ?? site.serverId;
   const targetTemplateId = options.overrideTemplateId ?? site.templateId;
 
@@ -210,14 +241,14 @@ async function deploySiteById(siteId: number, app: any, options: DeploySiteOptio
       originalBusinessName: template.originalBusinessName,
       originalDomain: template.originalDomain,
       newBusinessName: site.businessName,
-      newDomain: site.domain,
+      newDomain: normalizedDomain,
     });
 
-    appendDeployLog(siteId, 'Создание домена', `Пробую создать домен ${site.domain} в панели`);
+    appendDeployLog(siteId, 'Создание домена', `Пробую создать домен ${normalizedDomain} в панели`);
     const panel = getPanelAdapter(server);
     try {
-      await panel.createSite(site.domain);
-      appendDeployLog(siteId, 'Создание домена', `Домен ${site.domain} создан или уже существовал`);
+      await panel.createSite(normalizedDomain);
+      appendDeployLog(siteId, 'Создание домена', `Домен ${normalizedDomain} создан или уже существовал`);
       if (server.panelType === 'hestia') {
         appendDeployLog(siteId, 'Создание домена', 'Запрос Let\'s Encrypt отправлен в фоне и больше не блокирует деплой');
       }
@@ -227,24 +258,24 @@ async function deploySiteById(siteId: number, app: any, options: DeploySiteOptio
 
       if (server.panelType === 'hestia') {
         try {
-          const registration = await checkHestiaDomainRegistration(server, site.domain);
+          const registration = await checkHestiaDomainRegistration(server, normalizedDomain);
 
           if (!registration.exists) {
             const details = registration.diagnostics.join(' | ') || 'нет диагностического вывода';
             appendDeployLog(siteId, 'Создание домена', `Диагностика Hestia: ${details}`);
-            throw new Error(`Домен ${site.domain} не зарегистрирован в Hestia после ошибки панели: ${details}`);
+            throw new Error(`Домен ${normalizedDomain} не зарегистрирован в Hestia после ошибки панели: ${details}`);
           }
 
-          appendDeployLog(siteId, 'Создание домена', `Домен ${site.domain} найден в Hestia после повторной проверки`);
+          appendDeployLog(siteId, 'Создание домена', `Домен ${normalizedDomain} найден в Hestia после повторной проверки`);
         } catch (error: any) {
-          throw new Error(error?.message || `Домен ${site.domain} не появился в Hestia. Загрузка файлов остановлена, чтобы не пометить сайт как развёрнутый ошибочно.`);
+          throw new Error(error?.message || `Домен ${normalizedDomain} не появился в Hestia. Загрузка файлов остановлена, чтобы не пометить сайт как развёрнутый ошибочно.`);
         }
       }
     }
 
     const remoteDir = server.webRootPattern
       .replace('{{USER}}', server.panelUser || server.username)
-      .replace('{{DOMAIN}}', site.domain);
+      .replace('{{DOMAIN}}', normalizedDomain);
 
     appendDeployLog(siteId, 'Подготовка директории', `Очищаю старые файлы в ${remoteDir} перед загрузкой нового шаблона`);
     await clearRemoteDirectory(
@@ -315,6 +346,22 @@ async function deploySiteById(siteId: number, app: any, options: DeploySiteOptio
       onProgress: handleDeployProgress,
     });
 
+    const ownerUser = server.panelUser || server.username;
+    appendDeployLog(siteId, 'Права доступа', `Возвращаю владельца файлов пользователю панели ${ownerUser}`);
+    await syncRemoteOwnership(
+      {
+        host: server.host,
+        port: server.port,
+        username: server.username,
+        authType: server.authType as 'password' | 'key',
+        password: server.password ?? undefined,
+        privateKey: server.privateKey ?? undefined,
+      },
+      remoteDir,
+      ownerUser,
+    );
+    appendDeployLog(siteId, 'Права доступа', `Владелец файлов синхронизирован: ${ownerUser}`);
+
     stopProgressLogging = true;
 
     if (tmpDir) {
@@ -346,7 +393,7 @@ async function deploySiteById(siteId: number, app: any, options: DeploySiteOptio
         'deployed',
       );
     } else {
-      appendDeployLog(siteId, 'Проверка сайта', `Обновляю превью и проверяю ответ сайта ${site.domain}`);
+      appendDeployLog(siteId, 'Проверка сайта', `Обновляю превью и проверяю ответ сайта ${normalizedDomain}`);
       try {
         const previewMeta = await refreshSitePreview(siteId);
         appendDeployLog(
@@ -362,7 +409,7 @@ async function deploySiteById(siteId: number, app: any, options: DeploySiteOptio
       }
     }
 
-    return { success: true, domain: site.domain };
+    return { success: true, domain: normalizedDomain };
   } catch (err: any) {
     stopProgressLogging = true;
     if (tmpDir) {
@@ -382,6 +429,7 @@ function buildSiteRemoteContext(siteId: number) {
   if (!site) {
     throw new Error('Site not found');
   }
+  const normalizedDomain = getCanonicalSiteDomain(site);
 
   if (!site.serverId) {
     throw new Error('Site has no server');
@@ -394,7 +442,7 @@ function buildSiteRemoteContext(siteId: number) {
 
   const remoteRoot = server.webRootPattern
     .replace('{{USER}}', server.panelUser || server.username)
-    .replace('{{DOMAIN}}', site.domain);
+    .replace('{{DOMAIN}}', normalizedDomain);
 
   return {
     site,
@@ -599,7 +647,14 @@ export const siteRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(400).send({ error: 'Required: domain, businessName' });
     }
 
-    const existing = db.select().from(sites).where(eq(sites.domain, body.domain)).get();
+    let normalizedDomain: string;
+    try {
+      normalizedDomain = normalizeAndValidateDomain(String(body.domain));
+    } catch (error: any) {
+      return reply.code(400).send({ error: error.message });
+    }
+
+    const existing = db.select().from(sites).where(eq(sites.domain, normalizedDomain)).get();
 
     if (existing) {
       const updated = db
@@ -626,7 +681,7 @@ export const siteRoutes: FastifyPluginAsync = async (app) => {
     const inserted = db
       .insert(sites)
       .values({
-        domain: body.domain,
+        domain: normalizedDomain,
         businessName: body.businessName,
         templateId: body.templateId ?? null,
         serverId: body.serverId ?? null,
@@ -651,8 +706,21 @@ export const siteRoutes: FastifyPluginAsync = async (app) => {
     if (!existing) return reply.code(404).send({ error: 'Site not found' });
 
     const updateData: Record<string, any> = {};
+    if (body.domain !== undefined) {
+      try {
+        updateData.domain = normalizeAndValidateDomain(String(body.domain));
+      } catch (error: any) {
+        return reply.code(400).send({ error: error.message });
+      }
+
+      const conflict = db.select({ id: sites.id }).from(sites).where(eq(sites.domain, updateData.domain)).get();
+      if (conflict && conflict.id !== id) {
+        return reply.code(409).send({ error: 'Сайт с таким доменом уже существует' });
+      }
+    }
+
     const fields = [
-      'domain', 'businessName', 'templateId', 'serverId',
+      'businessName', 'templateId', 'serverId',
       'language', 'status', 'notes',
     ];
     for (const f of fields) {
@@ -732,7 +800,8 @@ export const siteRoutes: FastifyPluginAsync = async (app) => {
 
     for (const siteData of body.sites) {
       try {
-        const existing = db.select().from(sites).where(eq(sites.domain, siteData.domain)).get();
+        const normalizedDomain = normalizeAndValidateDomain(siteData.domain);
+        const existing = db.select().from(sites).where(eq(sites.domain, normalizedDomain)).get();
 
         const created = existing
           ? db
@@ -755,7 +824,7 @@ export const siteRoutes: FastifyPluginAsync = async (app) => {
           : db
               .insert(sites)
               .values({
-                domain: siteData.domain,
+                domain: normalizedDomain,
                 businessName: siteData.businessName,
                 templateId: body.templateId,
                 serverId: body.serverId,
@@ -770,12 +839,12 @@ export const siteRoutes: FastifyPluginAsync = async (app) => {
         if (body.autoDeploy) {
           try {
             await deploySiteById(created.id, app);
-            results.push({ domain: siteData.domain, status: 'deployed', siteId: created.id });
+            results.push({ domain: normalizedDomain, status: 'deployed', siteId: created.id });
           } catch (deployErr: any) {
-            results.push({ domain: siteData.domain, status: 'error', siteId: created.id, error: deployErr.message });
+            results.push({ domain: normalizedDomain, status: 'error', siteId: created.id, error: deployErr.message });
           }
         } else {
-          results.push({ domain: siteData.domain, status: 'created', siteId: created.id });
+          results.push({ domain: normalizedDomain, status: 'created', siteId: created.id });
         }
       } catch (err: any) {
         results.push({ domain: siteData.domain, status: 'error', error: err.message });
@@ -879,12 +948,21 @@ export const siteRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(409).send({ error: 'Сервер для этой воронки не найден. Удаление домена на сервере невозможно, запись не удалена.' });
       }
 
+      let normalizedDomain: string | null = null;
       try {
-        const panel = getPanelAdapter(server);
-        await panel.deleteSite(existing.domain);
+        normalizedDomain = normalizeAndValidateDomain(existing.domain);
       } catch (error: any) {
-        if (!isMissingRemoteDomainError(error?.message)) {
-          return reply.code(502).send({ error: `Не удалось удалить домен на сервере: ${error?.message || 'unknown error'}` });
+        app.log.warn({ siteId: existing.id, domain: existing.domain, error: error?.message }, 'Skipping remote site deletion because stored domain is invalid');
+      }
+
+      if (normalizedDomain) {
+        try {
+        const panel = getPanelAdapter(server);
+        await panel.deleteSite(normalizedDomain);
+        } catch (error: any) {
+          if (!isMissingRemoteDomainError(error?.message) && !isInvalidDomainFormatError(error?.message)) {
+            return reply.code(502).send({ error: `Не удалось удалить домен на сервере: ${error?.message || 'unknown error'}` });
+          }
         }
       }
     }

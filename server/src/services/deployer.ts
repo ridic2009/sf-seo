@@ -667,6 +667,30 @@ export async function clearRemoteDirectory(
   }
 }
 
+export async function syncRemoteOwnership(
+  server: ServerConnectionConfig,
+  remoteDir: string,
+  owner: string,
+): Promise<void> {
+  const normalizedOwner = owner.trim();
+  if (!normalizedOwner) {
+    return;
+  }
+
+  const conn = await createSSHConnection(server);
+
+  try {
+    await executeSSHCommandWithConnection(
+      conn,
+      [
+        `if [ -d ${shellEscape(remoteDir)} ]; then chown -R ${shellEscape(normalizedOwner)}:${shellEscape(normalizedOwner)} ${shellEscape(remoteDir)}; fi`,
+      ].join(' && '),
+    );
+  } finally {
+    conn.end();
+  }
+}
+
 export async function executeSSHCommand(
   server: ServerConnectionConfig,
   command: string,
