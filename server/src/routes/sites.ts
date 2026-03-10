@@ -98,6 +98,9 @@ async function refreshSitePreview(siteId: number) {
     throw new Error('Site not found');
   }
 
+  const previewImagePath = getSitePreviewImagePath(siteId);
+  const hasExistingPreviewImage = fs.existsSync(previewImagePath);
+
   try {
     const meta = await captureSitePreview({ id: site.id, domain: site.domain });
     db.update(sites)
@@ -119,10 +122,17 @@ async function refreshSitePreview(siteId: number) {
       .set({
         previewStatus: probeMeta?.statusCode ?? existingMeta?.statusCode ?? null,
         previewUpdatedAt: probeMeta?.capturedAt ?? existingMeta?.capturedAt ?? site.previewUpdatedAt ?? new Date().toISOString(),
-        previewError: previewErrorMessage,
+        previewError: hasExistingPreviewImage ? null : previewErrorMessage,
       })
       .where(eq(sites.id, siteId))
       .run();
+
+    if (hasExistingPreviewImage && existingMeta) {
+      return {
+        ...existingMeta,
+        errorMessage: null,
+      };
+    }
 
     throw new Error(previewErrorMessage);
   }

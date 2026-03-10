@@ -16,10 +16,12 @@ export function SitePreviewModal({ preview, onClose }: SitePreviewModalProps) {
   const refreshSitePreview = useRefreshSitePreview();
   const getApiErrorMessage = useApiErrorMessage();
   const [refreshToken, setRefreshToken] = useState(0);
+  const [imageLoadFailed, setImageLoadFailed] = useState(false);
   const isLivePreview = preview.site.status === 'deployed';
 
   useEffect(() => {
     setRefreshToken(0);
+    setImageLoadFailed(false);
   }, [preview.site.id, preview.url]);
 
   const imageUrl = useMemo(() => {
@@ -45,6 +47,7 @@ export function SitePreviewModal({ preview, onClose }: SitePreviewModalProps) {
                 onClick={() => {
                   refreshSitePreview.mutate(preview.site.id, {
                     onSuccess: () => {
+                      setImageLoadFailed(false);
                       setRefreshToken(Date.now());
                       toast.success(`Превью ${preview.site.domain} обновлено`);
                     },
@@ -75,7 +78,23 @@ export function SitePreviewModal({ preview, onClose }: SitePreviewModalProps) {
 
         <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4">
           <div className="rounded-xl border border-gray-800 bg-gray-900 p-3">
-            <img src={imageUrl} alt={preview.site.domain} className="h-auto w-full rounded-lg" />
+            {imageLoadFailed ? (
+              <div className="flex min-h-[320px] items-center justify-center rounded-lg border border-dashed border-gray-700 bg-gray-950/60 px-6 text-center text-sm text-gray-400">
+                <div className="max-w-xl space-y-3">
+                  <div className="text-base font-medium text-gray-200">Изображение превью пока недоступно</div>
+                  <div>
+                    {preview.site.previewError || 'Открой превью позже или нажми "Обновить превью", чтобы повторить снимок вручную.'}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <img
+                src={imageUrl}
+                alt={preview.site.domain}
+                className="h-auto w-full rounded-lg"
+                onError={() => setImageLoadFailed(true)}
+              />
+            )}
           </div>
         </div>
       </div>

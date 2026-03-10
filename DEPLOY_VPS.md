@@ -169,7 +169,7 @@ ssh deploy@VPS_IP
 Под пользователем root или через sudo:
 
 ```bash
-apt install -y curl git nginx ufw build-essential python3 make g++ unzip chromium-browser certbot python3-certbot-nginx
+apt install -y curl git nginx ufw build-essential python3 make g++ unzip chromium-browser xdg-utils libgbm1 certbot python3-certbot-nginx
 ```
 
 Открой firewall:
@@ -293,6 +293,7 @@ EnvironmentFile=/home/deploy/sf-seo/.env
 ExecStart=/usr/bin/node /home/deploy/sf-seo/server/dist/index.js
 Restart=always
 RestartSec=5
+LimitMEMLOCK=infinity
 StandardOutput=journal
 StandardError=journal
 
@@ -475,6 +476,8 @@ dig +short sf-seo.sbs
 - Fastify сам раздаёт client/dist, поэтому отдельный frontend-сервер не нужен.
 - Клиент ходит на backend через /api, поэтому VITE_API_URL не требуется.
 - Для генерации превью нужен установленный браузер. В этой инструкции используется chromium-browser.
+- Для Chromium под systemd нужен LimitMEMLOCK=infinity в unit-файле, иначе screenshot может падать с ошибкой memlock.
+- Для запуска Chromium на Ubuntu также нужны системные пакеты xdg-utils и libgbm1.
 - SQLite и template storage лежат в server/data, поэтому этот каталог нельзя удалять между деплоями.
 - В базе хранятся SSH-пароли, private keys и panel passwords. Доступ к VPS и бэкапам должен быть строго ограничен.
 - Без ADMIN_PASSWORD_HASH и AUTH_SESSION_SECRET backend в production не стартует. Это сделано специально.
