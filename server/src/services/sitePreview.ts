@@ -30,6 +30,15 @@ interface BrowserLaunchDetails {
   env: Record<string, string | undefined>;
 }
 
+interface PreviewDiagnostics {
+  pageCrashed: boolean;
+  browserDisconnected: boolean;
+  pageErrors: string[];
+  consoleErrors: string[];
+  requestFailures: string[];
+  screenshotAttempts: string[];
+}
+
 function ensurePreviewDir() {
   fs.mkdirSync(SITE_PREVIEWS_DIR, { recursive: true });
 }
@@ -172,7 +181,80 @@ function summarizePreviewErrorMessage(message: string) {
     return 'Не удалось снять screenshot: Chromium закрыл страницу во время снимка.';
   }
 
+  if (withoutCallLog.toLowerCase().includes('page crashed')) {
+    return 'Не удалось снять screenshot: страница упала внутри Chromium.';
+  }
+
   return withoutCallLog;
+}
+
+function createPreviewDiagnostics(): PreviewDiagnostics {
+  return {
+    pageCrashed: false,
+    browserDisconnected: false,
+    pageErrors: [],
+    consoleErrors: [],
+    requestFailures: [],
+    screenshotAttempts: [],
+  };
+}
+
+function pushDiagnostic(list: string[], value: string, limit = 8) {
+  if (!value || list.length >= limit) {
+    return;
+  }
+
+  list.push(value);
+}
+
+function formatPreviewDiagnostics(diagnostics: PreviewDiagnostics) {
+  const parts: string[] = [];
+
+  if (diagnostics.pageCrashed) {
+    parts.push('page crashed');
+  }
+
+  if (diagnostics.browserDisconnected) {
+    parts.push('browser disconnected');
+  }
+
+  if (diagnostics.screenshotAttempts.length > 0) {
+    parts.push(`screenshot attempts: ${diagnostics.screenshotAttempts.join(' -> ')}`);
+  }
+
+  if (diagnostics.requestFailures.length > 0) {
+    parts.push(`request failures: ${diagnostics.requestFailures.join(' | ')}`);
+  }
+
+  if (diagnostics.pageErrors.length > 0) {
+    parts.push(`page errors: ${diagnostics.pageErrors.join(' | ')}`);
+  }
+
+  if (diagnostics.consoleErrors.length > 0) {
+    parts.push(`console errors: ${diagnostics.consoleErrors.join(' | ')}`);
+  }
+
+  return parts.join(' || ');
+}
+
+async function stabilizePageBeforeScreenshot(page: Page) {
+  try {
+    await page.addStyleTag({
+      content: `
+        *, *::before, *::after {
+          animation: none !important;
+          transition: none !important;
+          caret-color: transparent !important;
+          scroll-behavior: auto !important;
+        }
+        video, iframe {
+          animation: none !important;
+        }
+      `,
+    });
+  } catch {
+    // Ignore style injection failures.
+  }
 }
 
 function withPreviewMeta(error: Error, previewMeta: SitePreviewMeta) {
@@ -225,7 +307,7 @@ async function captureScreenshotViaCdp(page: Page): Promise<Buffer> {
     const contentWidth = Math.max(1440, Math.ceil(metrics.contentSize?.width || 1440));
     const contentHeight = Math.max(900, Math.ceil(metrics.contentSize?.height || 900));
     const width = Math.min(contentWidth, 1440);
-    const height = Math.min(contentHeight, 12000);
+    const height = Math.min(contentHeight, 8000);
 
     await session.send('Emulation.setDeviceMetricsOverride', {
       mobile: false,
@@ -250,6 +332,38 @@ async function captureScreenshotViaCdp(page: Page): Promise<Buffer> {
       // Ignore cleanup failures.
     }
     await session.detach();
+  }
+}
+
+async function captureScreenshotViaPlaywright(page: Page): Promise<Buffer> {
+  return page.screenshot({
+    type: 'png',
+    fullPage: true,
+    animations: 'disabled',
+    timeout: 15000,
+  });
+}
+
+async function captureSiteScreenshot(page: Page, diagnostics: PreviewDiagnostics): Promise<Buffer> {
+  diagnostics.screenshotAttempts.push('playwright-fullpage');
+
+  try {
+    return await captureScreenshotViaPlaywright(page);
+  } catch (playwrightError: any) {
+    const playwrightMessage = playwrightError?.message || 'playwright screenshot failed';
+
+    if (page.isClosed()) {
+      throw new Error(`${playwrightMessage} | ${formatPreviewDiagnostics(diagnostics)}`);
+    }
+
+    diagnostics.screenshotAttempts.push('cdp-fallback');
+
+    try {
+      return await captureScreenshotViaCdp(page);
+    } catch (cdpError: any) {
+      const cdpMessage = cdpError?.message || 'cdp screenshot failed';
+      throw new Error(`${cdpMessage} | previous: ${playwrightMessage} | ${formatPreviewDiagnostics(diagnostics)}`);
+    }
   }
 }
 
@@ -312,9 +426,33 @@ export async function captureSitePreview(target: SitePreviewTarget): Promise<Sit
   });
 
   const page = await context.newPage();
+  const diagnostics = createPreviewDiagnostics();
   let statusCode: number | null = baseMeta.statusCode;
   let errorMessage: string | null = baseMeta.errorMessage;
   let finalUrl = baseMeta.finalUrl;
+
+  browser.on('disconnected', () => {
+    diagnostics.browserDisconnected = true;
+  });
+
+  page.on('crash', () => {
+    diagnostics.pageCrashed = true;
+  });
+
+  page.on('pageerror', (error) => {
+    pushDiagnostic(diagnostics.pageErrors, error.message);
+  });
+
+  page.on('console', (message) => {
+    if (message.type() === 'error') {
+      pushDiagnostic(diagnostics.consoleErrors, message.text());
+    }
+  });
+
+  page.on('requestfailed', (request) => {
+    const failureText = `${request.method()} ${request.url()} :: ${request.failure()?.errorText || 'request failed'}`;
+    pushDiagnostic(diagnostics.requestFailures, failureText);
+  });
 
   try {
     let response = null;
@@ -340,7 +478,8 @@ export async function captureSitePreview(target: SitePreviewTarget): Promise<Sit
       );
     }
 
-    const screenshotBuffer = await captureScreenshotViaCdp(page);
+    await stabilizePageBeforeScreenshot(page);
+    const screenshotBuffer = await captureSiteScreenshot(page, diagnostics);
     const meta: SitePreviewMeta = {
       statusCode,
       capturedAt: new Date().toISOString(),
@@ -350,6 +489,22 @@ export async function captureSitePreview(target: SitePreviewTarget): Promise<Sit
 
     await writePreviewFiles(target.id, meta, screenshotBuffer);
     return meta;
+  } catch (error: any) {
+    const diagnosticsSummary = formatPreviewDiagnostics(diagnostics);
+    if (diagnosticsSummary) {
+      console.error(`[site-preview:${target.domain}] ${diagnosticsSummary}`);
+    }
+
+    const enrichedMessage = diagnosticsSummary
+      ? `${error?.message || 'Preview capture failed'}\nDiagnostics: ${diagnosticsSummary}`
+      : (error?.message || 'Preview capture failed');
+    throw withPreviewMeta(new Error(enrichedMessage), {
+      ...baseMeta,
+      statusCode,
+      finalUrl,
+      errorMessage: summarizePreviewErrorMessage(enrichedMessage),
+      capturedAt: new Date().toISOString(),
+    });
   } finally {
     await context.close();
     await browser.close();
