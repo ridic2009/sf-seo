@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from './client';
 import type { Template } from '../types';
+import type { EditorFileEntry } from '../components/editor/codeEditorTypes';
 
 interface EditorSearchOptions {
   ignoreCase?: boolean;
@@ -15,8 +16,15 @@ export function getTemplatePreviewUrl(id: number) {
   return `/api/templates/${id}/preview`;
 }
 
+export function getTemplateLivePreviewUrl(id: number, relativePath = '') {
+  const normalizedPath = relativePath.replace(/^\/+/, '');
+  return normalizedPath
+    ? `/api/templates/${id}/live/${normalizedPath}`
+    : `/api/templates/${id}/live/`;
+}
+
 export function getTemplateFiles(id: number) {
-  return api.get(`/templates/${id}/files`).then((r) => r.data.files as string[]);
+  return api.get(`/templates/${id}/files`).then((r) => r.data.files as EditorFileEntry[]);
 }
 
 export function getTemplateFileContent(id: number, filePath: string) {
@@ -25,6 +33,23 @@ export function getTemplateFileContent(id: number, filePath: string) {
 
 export function saveTemplateFileContent(id: number, filePath: string, content: string) {
   return api.put(`/templates/${id}/file`, { path: filePath, content }).then((r) => r.data);
+}
+
+export function uploadTemplateFiles(id: number, files: File[], targetDir: string) {
+  const formData = new FormData();
+  files.forEach((file) => {
+    const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+    formData.append('files', file, relativePath);
+  });
+
+  return api.post(`/templates/${id}/files`, formData, {
+    params: { dir: targetDir || undefined },
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }).then((r) => r.data);
+}
+
+export function deleteTemplateFile(id: number, filePath: string) {
+  return api.delete(`/templates/${id}/file`, { params: { path: filePath } }).then((r) => r.data);
 }
 
 export function searchTemplateFiles(id: number, query: string, options: EditorSearchOptions = {}) {

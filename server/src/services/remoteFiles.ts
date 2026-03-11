@@ -1,5 +1,5 @@
 import { executeSSHCommand, type ServerConnectionConfig } from './deployer.js';
-import { normalizeEditorFileList, resolveRemoteEditorPath, type SearchOptions, type SearchResult } from './codeEditor.js';
+import { normalizeFileList, resolveRemoteEditorPath, type SearchOptions, type SearchResult } from './codeEditor.js';
 import path from 'path';
 
 export interface BulkRemoteSiteTarget {
@@ -80,7 +80,7 @@ function toPythonLiteral(value: string | boolean | null): string {
   return JSON.stringify(value);
 }
 
-export async function listRemoteEditableFiles(server: ServerConnectionConfig, remoteRoot: string): Promise<string[]> {
+export async function listRemoteFiles(server: ServerConnectionConfig, remoteRoot: string): Promise<string[]> {
   const root = path.posix.resolve(remoteRoot);
   const output = await executeSSHCommand(
     server,
@@ -94,7 +94,7 @@ export async function listRemoteEditableFiles(server: ServerConnectionConfig, re
     .map((line) => line.startsWith(`${root}/`) ? line.slice(root.length + 1) : line)
     .filter((line) => !line.startsWith('.site-factory-backups/'));
 
-  return normalizeEditorFileList(files);
+  return normalizeFileList(files);
 }
 
 export async function readRemoteTextFile(
@@ -149,6 +149,35 @@ export async function writeRemoteTextFile(
       ownerName ? `chown ${ownerName}:${ownerName} ${shellEscape(remotePath)} 2>/dev/null || true` : 'true',
     ].join('; '),
   );
+}
+
+export async function deleteRemoteFile(
+  server: ServerConnectionConfig,
+  remoteRoot: string,
+  relativePath: string,
+): Promise<void> {
+  const root = path.posix.resolve(remoteRoot);
+  const remotePath = resolveRemoteEditorPath(remoteRoot, relativePath);
+  const backupStamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupRoot = path.posix.join(root, '.site-factory-backups', backupStamp);
+  const backupPath = path.posix.join(backupRoot, relativePath.replace(/\\/g, '/'));
+
+  const output = await executeSSHCommand(
+    server,
+    [
+      `if [ ! -f ${shellEscape(remotePath)} ]; then echo '__SF_NOT_FOUND__'; exit 0; fi`,
+      `mkdir -p ${shellEscape(path.posix.dirname(backupPath))}`,
+      `cp ${shellEscape(remotePath)} ${shellEscape(backupPath)}`,
+      `rm -f ${shellEscape(remotePath)}`,
+      `current_dir=${shellEscape(path.posix.dirname(remotePath))}`,
+      `root_dir=${shellEscape(root)}`,
+      `while [ "$current_dir" != "$root_dir" ]; do rmdir "$current_dir" 2>/dev/null || break; current_dir=$(dirname "$current_dir"); done`,
+    ].join('; '),
+  );
+
+  if (output.includes('__SF_NOT_FOUND__')) {
+    throw new Error('Remote file not found');
+  }
 }
 
 export async function searchRemoteFiles(

@@ -16,7 +16,7 @@ import {
   syncTemplatesFromRegistry,
 } from '../services/templateSync.js';
 import { captureTemplatePreview, getTemplatePreviewImagePath, invalidateTemplatePreview } from '../services/templatePreview.js';
-import { isEditableTextFile, normalizeEditorFileList, resolveLocalEditorPath, replaceLocalFiles, searchLocalFiles, validateSearchQuery } from '../services/codeEditor.js';
+import { describeEditorFiles, isEditableTextFile, resolveLocalEditorPath, replaceLocalFiles, searchLocalFiles, validateSearchQuery } from '../services/codeEditor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TEMPLATES_DIR = path.resolve(__dirname, '../../data/templates');
@@ -34,6 +34,10 @@ interface TemplatePackageManifest {
 }
 
 const PREVIEW_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
+const LIVE_PREVIEW_INDEX_FILES = ['index.html', 'index.htm', 'index.php'];
+const TEXT_LIVE_PREVIEW_EXTENSIONS = new Set([
+  '.html', '.htm', '.css', '.js', '.mjs', '.cjs', '.json', '.svg', '.txt', '.xml', '.php', '.map', '.webmanifest', '.ico',
+]);
 
 function isSearchInputError(message?: string): boolean {
   return Boolean(message && (message.includes('Invalid regular expression') || message.includes('Regex must not match empty strings')));
@@ -41,6 +45,27 @@ function isSearchInputError(message?: string): boolean {
 
 function getMimeType(filePath: string): string {
   switch (path.extname(filePath).toLowerCase()) {
+    case '.html':
+    case '.htm':
+    case '.php':
+      return 'text/html; charset=utf-8';
+    case '.css':
+      return 'text/css; charset=utf-8';
+    case '.js':
+    case '.mjs':
+    case '.cjs':
+      return 'application/javascript; charset=utf-8';
+    case '.json':
+    case '.map':
+      return 'application/json; charset=utf-8';
+    case '.svg':
+      return 'image/svg+xml';
+    case '.txt':
+      return 'text/plain; charset=utf-8';
+    case '.xml':
+      return 'application/xml; charset=utf-8';
+    case '.ico':
+      return 'image/x-icon';
     case '.png':
       return 'image/png';
     case '.jpg':
@@ -50,9 +75,25 @@ function getMimeType(filePath: string): string {
       return 'image/webp';
     case '.gif':
       return 'image/gif';
+    case '.woff':
+      return 'font/woff';
+    case '.woff2':
+      return 'font/woff2';
+    case '.ttf':
+      return 'font/ttf';
+    case '.otf':
+      return 'font/otf';
+    case '.eot':
+      return 'application/vnd.ms-fontobject';
+    case '.webmanifest':
+      return 'application/manifest+json; charset=utf-8';
     default:
       return 'application/octet-stream';
   }
+}
+
+function isTextLivePreviewFile(filePath: string) {
+  return TEXT_LIVE_PREVIEW_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
 function collectTemplateImages(dir: string, prefix = ''): string[] {
@@ -106,6 +147,174 @@ function getTemplatePreviewFile(templateDir: string): string | null {
   return candidates.sort((left, right) => score(right) - score(left))[0] ?? null;
 }
 
+function getTemplateLiveEntryPath(templateDir: string, requestedPath = ''): string | null {
+  const normalizedPath = requestedPath.replace(/\\/g, '/').replace(/^\/+/, '');
+  const resolvedPath = normalizedPath ? resolveLocalEditorPath(templateDir, normalizedPath) : templateDir;
+
+  if (!fs.existsSync(resolvedPath)) {
+    return null;
+  }
+
+  if (fs.statSync(resolvedPath).isDirectory()) {
+    for (const fileName of LIVE_PREVIEW_INDEX_FILES) {
+      const candidate = path.join(resolvedPath, fileName);
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  return resolvedPath;
+}
+
+function getTemplateLiveBasePath(templateId: number) {
+  return `/api/templates/${templateId}/live/`;
+}
+
+function rewriteRootRelativeValue(value: string, liveBasePath: string) {
+  if (!value.startsWith('/') || value.startsWith('//')) {
+    return value;
+  }
+
+  return `${liveBasePath}${value.slice(1)}`;
+}
+
+function rewriteSrcsetValue(value: string, liveBasePath: string) {
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const [url, ...descriptor] = entry.split(/\s+/);
+      return [rewriteRootRelativeValue(url, liveBasePath), ...descriptor].filter(Boolean).join(' ');
+    })
+    .join(', ');
+}
+
+function injectIntoHtmlDocument(content: string, snippet: string) {
+  if (/<head(\s[^>]*)?>/i.test(content)) {
+    return content.replace(/<head(\s[^>]*)?>/i, (match) => `${match}${snippet}`);
+  }
+
+  if (/<html(\s[^>]*)?>/i.test(content)) {
+    return content.replace(/<html(\s[^>]*)?>/i, (match) => `${match}<head>${snippet}</head>`);
+  }
+
+  return `${snippet}${content}`;
+}
+
+function createLivePreviewRuntimeScript(templateId: number) {
+  const liveBasePath = getTemplateLiveBasePath(templateId);
+  const escapedBasePath = JSON.stringify(liveBasePath);
+
+  return `<script>(function(){
+  var liveBasePath=${escapedBasePath};
+  function rewrite(value){
+    if(typeof value!=="string") return value;
+    if(!value.startsWith("/")||value.startsWith("//")) return value;
+    return liveBasePath+value.slice(1);
+  }
+  var originalFetch=window.fetch;
+  if(typeof originalFetch==="function"){
+    window.fetch=function(input, init){
+      if(typeof input==="string") return originalFetch.call(this, rewrite(input), init);
+      if(input instanceof URL) return originalFetch.call(this, rewrite(input.toString()), init);
+      if(typeof Request!=="undefined"&&input instanceof Request){
+        var nextUrl=rewrite(input.url);
+        if(nextUrl!==input.url) return originalFetch.call(this, new Request(nextUrl, input), init);
+      }
+      return originalFetch.call(this, input, init);
+    };
+  }
+  var originalOpen=XMLHttpRequest&&XMLHttpRequest.prototype&&XMLHttpRequest.prototype.open;
+  if(typeof originalOpen==="function"){
+    XMLHttpRequest.prototype.open=function(method, url){
+      arguments[1]=typeof url==="string"?rewrite(url):url;
+      return originalOpen.apply(this, arguments);
+    };
+  }
+  var originalWindowOpen=window.open;
+  if(typeof originalWindowOpen==="function"){
+    window.open=function(url){
+      arguments[0]=typeof url==="string"?rewrite(url):url;
+      return originalWindowOpen.apply(window, arguments);
+    };
+  }
+})();</script>`;
+}
+
+function rewriteLivePreviewHtml(content: string, templateId: number) {
+  const liveBasePath = getTemplateLiveBasePath(templateId);
+  const baseTag = `<base href="${liveBasePath}">`;
+  const runtimeScript = createLivePreviewRuntimeScript(templateId);
+  const withHeadInjection = /<base\s/i.test(content)
+    ? injectIntoHtmlDocument(content, runtimeScript)
+    : injectIntoHtmlDocument(content, `${baseTag}${runtimeScript}`);
+
+  return withHeadInjection
+    .replace(/\b(href|src|poster|data|action|formaction)=(["'])(.*?)\2/gi, (match, attribute, quote, value) => {
+      return `${attribute}=${quote}${rewriteRootRelativeValue(value, liveBasePath)}${quote}`;
+    })
+    .replace(/\bsrcset=(["'])(.*?)\1/gi, (match, quote, value) => {
+      return `srcset=${quote}${rewriteSrcsetValue(value, liveBasePath)}${quote}`;
+    })
+    .replace(/\bstyle=(["'])(.*?)\1/gi, (match, quote, value) => {
+      return `style=${quote}${rewriteLivePreviewCss(value, templateId)}${quote}`;
+    })
+    .replace(/<style\b([^>]*)>([\s\S]*?)<\/style>/gi, (match, attributes, cssContent) => {
+      return `<style${attributes}>${rewriteLivePreviewCss(cssContent, templateId)}</style>`;
+    });
+}
+
+function rewriteLivePreviewCss(content: string, templateId: number) {
+  const liveBasePath = getTemplateLiveBasePath(templateId);
+  return content
+    .replace(/url\((['"]?)\/(?!\/)/gi, `url($1${liveBasePath}`)
+    .replace(/(@import\s+(?:url\()?["'])\/(?!\/)/gi, `$1${liveBasePath}`);
+}
+
+function sendLivePreviewError(reply: any, statusCode: number, title: string, description: string) {
+  reply.code(statusCode).type('text/html; charset=utf-8');
+  return reply.send(`<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${title}</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: radial-gradient(circle at top, #172033, #050816 60%);
+        color: #e5edf8;
+        font-family: Segoe UI, sans-serif;
+      }
+      main {
+        width: min(560px, calc(100vw - 32px));
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        border-radius: 24px;
+        background: rgba(11, 18, 32, 0.88);
+        padding: 28px;
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+      }
+      h1 { margin: 0 0 12px; font-size: 24px; }
+      p { margin: 0; color: #94a3b8; line-height: 1.6; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>${title}</h1>
+      <p>${description}</p>
+    </main>
+  </body>
+</html>`);
+}
+
 function parseLanguages(value: string): string[] {
   try {
     const parsed = JSON.parse(value);
@@ -140,6 +349,37 @@ function sanitizeTemplateFilename(name: string): string {
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
   return safe || 'template';
+}
+
+function syncTemplateAfterContentChange(template: typeof templates.$inferSelect) {
+  const syncUpdatedAt = new Date().toISOString();
+  const updated = db
+    .update(templates)
+    .set({
+      syncId: template.syncId ?? randomUUID(),
+      syncUpdatedAt,
+      updatedAt: syncUpdatedAt,
+    })
+    .where(eq(templates.id, template.id))
+    .returning()
+    .get();
+
+  syncTemplateToRegistry(updated);
+  return updated;
+}
+
+function removeEmptyLocalParentDirs(rootDir: string, startDir: string) {
+  const rootResolved = path.resolve(rootDir);
+  let currentDir = path.resolve(startDir);
+
+  while (currentDir !== rootResolved && currentDir.startsWith(`${rootResolved}${path.sep}`)) {
+    if (!fs.existsSync(currentDir) || fs.readdirSync(currentDir).length > 0) {
+      break;
+    }
+
+    fs.rmdirSync(currentDir);
+    currentDir = path.dirname(currentDir);
+  }
 }
 
 function extractTemplateArchive(zip: AdmZip, templateDir: string, manifestEntry?: AdmZip.IZipEntry | null) {
@@ -249,6 +489,65 @@ export const templateRoutes: FastifyPluginAsync = async (app) => {
     return reply.send(fs.createReadStream(filePath));
   });
 
+  app.get<{ Params: { id: string } }>('/:id/live', async (request, reply) => {
+    const requestPath = request.url.split('?')[0];
+    return reply.redirect(302, `${requestPath}/`);
+  });
+
+  const serveTemplateLivePreview = async (
+    request: { params: { id: string; '*': string } },
+    reply: any,
+  ) => {
+    const id = parseInt(request.params.id);
+    if (isNaN(id)) return reply.code(400).send({ error: 'Invalid id' });
+
+    const template = db.select().from(templates).where(eq(templates.id, id)).get();
+    if (!template) {
+      return sendLivePreviewError(reply, 404, 'Шаблон не найден', 'Не удалось открыть live-preview, потому что шаблон отсутствует в базе.');
+    }
+
+    let filePath: string | null = null;
+    try {
+      filePath = getTemplateLiveEntryPath(template.dirPath, request.params['*'] || '');
+    } catch {
+      return sendLivePreviewError(reply, 400, 'Некорректный путь', 'Live-preview запросил путь за пределами директории шаблона.');
+    }
+
+    if (!filePath || !fs.existsSync(filePath)) {
+      return sendLivePreviewError(
+        reply,
+        404,
+        'Точка входа не найдена',
+        'В шаблоне нет index.html, index.htm или index.php в запрошенной директории, поэтому live-preview открыть нельзя.',
+      );
+    }
+
+    reply.header('Cache-Control', 'no-store');
+
+    if (!isTextLivePreviewFile(filePath)) {
+      reply.type(getMimeType(filePath));
+      return reply.send(fs.createReadStream(filePath));
+    }
+
+    const mimeType = getMimeType(filePath);
+    let content = fs.readFileSync(filePath, 'utf-8');
+
+    if (mimeType.startsWith('text/html')) {
+      content = rewriteLivePreviewHtml(content, template.id);
+    } else if (mimeType.startsWith('text/css')) {
+      content = rewriteLivePreviewCss(content, template.id);
+    }
+
+    reply.type(mimeType);
+    return reply.send(content);
+  };
+
+  app.get<{ Params: { id: string; '*': string } }>('/:id/live/', async (request, reply) => {
+    return serveTemplateLivePreview({ params: { id: request.params.id, '*': '' } }, reply);
+  });
+
+  app.get<{ Params: { id: string; '*': string } }>('/:id/live/*', serveTemplateLivePreview);
+
   // Get template file tree (for preview)
   app.get<{ Params: { id: string } }>('/:id/files', async (request, reply) => {
     const id = parseInt(request.params.id);
@@ -269,7 +568,52 @@ export const templateRoutes: FastifyPluginAsync = async (app) => {
       }
     }
     walk(template.dirPath, '');
-    return { files: normalizeEditorFileList(files) };
+    return { files: describeEditorFiles(files) };
+  });
+
+  app.post<{ Params: { id: string }; Querystring: { dir?: string } }>('/:id/files', async (request, reply) => {
+    const id = parseInt(request.params.id);
+    if (isNaN(id)) return reply.code(400).send({ error: 'Invalid id' });
+
+    const template = db.select().from(templates).where(eq(templates.id, id)).get();
+    if (!template) return reply.code(404).send({ error: 'Template not found' });
+
+    const targetDir = (request.query.dir || '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+
+    try {
+      if (targetDir) {
+        const resolvedDir = resolveLocalEditorPath(template.dirPath, targetDir);
+        fs.mkdirSync(resolvedDir, { recursive: true });
+      }
+
+      let uploaded = 0;
+      for await (const part of request.parts()) {
+        if (part.type !== 'file') {
+          continue;
+        }
+
+        const incomingPath = path.posix.normalize((part.filename || '').replace(/\\/g, '/')).replace(/^\/+/, '');
+        if (!incomingPath || incomingPath === '.' || incomingPath.endsWith('/')) {
+          continue;
+        }
+
+        const relativePath = targetDir ? `${targetDir}/${incomingPath}` : incomingPath;
+        const filePath = resolveLocalEditorPath(template.dirPath, relativePath);
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        fs.writeFileSync(filePath, await part.toBuffer());
+        uploaded += 1;
+      }
+
+      if (uploaded === 0) {
+        return reply.code(400).send({ error: 'No files uploaded' });
+      }
+
+      invalidateTemplatePreview(template.id);
+      syncTemplateAfterContentChange(template);
+      return { success: true, uploaded };
+    } catch (error: any) {
+      return reply.code(500).send({ error: error.message });
+    }
   });
 
   app.get<{ Params: { id: string }; Querystring: { path?: string } }>('/:id/file', async (request, reply) => {
@@ -309,20 +653,34 @@ export const templateRoutes: FastifyPluginAsync = async (app) => {
     fs.writeFileSync(filePath, body.content, 'utf-8');
     invalidateTemplatePreview(template.id);
 
-    const syncUpdatedAt = new Date().toISOString();
-    const updated = db
-      .update(templates)
-      .set({
-        syncId: template.syncId ?? randomUUID(),
-        syncUpdatedAt,
-        updatedAt: syncUpdatedAt,
-      })
-      .where(eq(templates.id, id))
-      .returning()
-      .get();
-
-    syncTemplateToRegistry(updated);
+    syncTemplateAfterContentChange(template);
     return { success: true };
+  });
+
+  app.delete<{ Params: { id: string }; Querystring: { path?: string } }>('/:id/file', async (request, reply) => {
+    const id = parseInt(request.params.id);
+    if (isNaN(id)) return reply.code(400).send({ error: 'Invalid id' });
+
+    const relativePath = request.query.path;
+    if (!relativePath) return reply.code(400).send({ error: 'Path is required' });
+
+    const template = db.select().from(templates).where(eq(templates.id, id)).get();
+    if (!template) return reply.code(404).send({ error: 'Template not found' });
+
+    try {
+      const filePath = resolveLocalEditorPath(template.dirPath, relativePath);
+      if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+        return reply.code(404).send({ error: 'File not found' });
+      }
+
+      fs.rmSync(filePath, { force: true });
+      removeEmptyLocalParentDirs(template.dirPath, path.dirname(filePath));
+      invalidateTemplatePreview(template.id);
+      syncTemplateAfterContentChange(template);
+      return { success: true };
+    } catch (error: any) {
+      return reply.code(500).send({ error: error.message });
+    }
   });
 
   app.post<{ Params: { id: string } }>('/:id/search', async (request, reply) => {
@@ -388,19 +746,7 @@ export const templateRoutes: FastifyPluginAsync = async (app) => {
 
     invalidateTemplatePreview(template.id);
 
-    const syncUpdatedAt = new Date().toISOString();
-    const updated = db
-      .update(templates)
-      .set({
-        syncId: template.syncId ?? randomUUID(),
-        syncUpdatedAt,
-        updatedAt: syncUpdatedAt,
-      })
-      .where(eq(templates.id, id))
-      .returning()
-      .get();
-
-    syncTemplateToRegistry(updated);
+    syncTemplateAfterContentChange(template);
     return result;
   });
 

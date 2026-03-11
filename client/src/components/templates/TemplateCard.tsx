@@ -13,7 +13,7 @@ interface TemplateCardProps {
   onDelete: ReturnType<typeof useDeleteTemplate>;
   onEdit: (template: Template) => void;
   onCodeEdit: (template: Template) => void;
-  onOpenPreview: (template: Template, url: string) => void;
+  onOpenPreview: (template: Template) => void;
 }
 
 export function TemplateCard({ template, onDelete, onEdit, onCodeEdit, onOpenPreview }: TemplateCardProps) {
@@ -33,7 +33,7 @@ export function TemplateCard({ template, onDelete, onEdit, onCodeEdit, onOpenPre
         ) : (
           <button
             type="button"
-            onClick={() => onOpenPreview(template, previewUrl)}
+            onClick={() => onOpenPreview(template)}
             className="group block w-full"
             title="Открыть полное превью"
           >

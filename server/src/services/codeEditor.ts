@@ -26,6 +26,11 @@ export interface SearchOptions {
   useRegex?: boolean;
 }
 
+export interface EditorFileDescriptor {
+  path: string;
+  editable: boolean;
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -84,11 +89,22 @@ export function resolveRemoteEditorPath(rootDir: string, relativePath: string): 
 }
 
 export function normalizeEditorFileList(files: string[]): string[] {
+  return normalizeFileList(files)
+    .filter(isEditableTextFile);
+}
+
+export function normalizeFileList(files: string[]): string[] {
   return files
     .map((item) => item.replace(/\\/g, '/').replace(/^\.\//, ''))
     .filter(Boolean)
-    .filter(isEditableTextFile)
     .sort((left, right) => left.localeCompare(right));
+}
+
+export function describeEditorFiles(files: string[]): EditorFileDescriptor[] {
+  return normalizeFileList(files).map((filePath) => ({
+    path: filePath,
+    editable: isEditableTextFile(filePath),
+  }));
 }
 
 export function collectLocalEditableFiles(rootDir: string, currentDir = rootDir, prefix = ''): string[] {

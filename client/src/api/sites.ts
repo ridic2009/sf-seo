@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from './client';
 import type { Site, BatchDeployPayload, BatchTransferPayload } from '../types';
+import type { EditorFileEntry } from '../components/editor/codeEditorTypes';
 
 interface EditorSearchOptions {
   ignoreCase?: boolean;
@@ -12,7 +13,7 @@ export function getSitePreviewUrl(id: number, cacheKey?: string | null) {
 }
 
 export function getSiteEditorFiles(id: number) {
-  return api.get(`/sites/${id}/editor/files`).then((r) => r.data.files as string[]);
+  return api.get(`/sites/${id}/editor/files`).then((r) => r.data.files as EditorFileEntry[]);
 }
 
 export function getSiteEditorFileContent(id: number, filePath: string) {
@@ -21,6 +22,23 @@ export function getSiteEditorFileContent(id: number, filePath: string) {
 
 export function saveSiteEditorFileContent(id: number, filePath: string, content: string) {
   return api.put(`/sites/${id}/editor/file`, { path: filePath, content }).then((r) => r.data);
+}
+
+export function uploadSiteEditorFiles(id: number, files: File[], targetDir: string) {
+  const formData = new FormData();
+  files.forEach((file) => {
+    const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+    formData.append('files', file, relativePath);
+  });
+
+  return api.post(`/sites/${id}/editor/files`, formData, {
+    params: { dir: targetDir || undefined },
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }).then((r) => r.data);
+}
+
+export function deleteSiteEditorFile(id: number, filePath: string) {
+  return api.delete(`/sites/${id}/editor/file`, { params: { path: filePath } }).then((r) => r.data);
 }
 
 export function searchSiteEditorFiles(id: number, query: string, options: EditorSearchOptions = {}) {

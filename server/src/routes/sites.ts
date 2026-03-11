@@ -6,8 +6,8 @@ import { processTemplate } from '../services/templater.js';
 import { uploadDirectory, executeSSHCommand, clearRemoteDirectory, syncRemoteOwnership, type DeployProgressEvent } from '../services/deployer.js';
 import { getPanelAdapter } from '../panels/index.js';
 import { captureSitePreview, getSitePreviewImagePath, readSitePreviewMeta } from '../services/sitePreview.js';
-import { listRemoteEditableFiles, readRemoteTextFile, writeRemoteTextFile, searchRemoteFiles, replaceRemoteFiles } from '../services/remoteFiles.js';
-import { validateSearchQuery } from '../services/codeEditor.js';
+import { deleteRemoteFile, listRemoteFiles, readRemoteTextFile, writeRemoteTextFile, searchRemoteFiles, replaceRemoteFiles } from '../services/remoteFiles.js';
+import { describeEditorFiles, resolveRemoteEditorPath, validateSearchQuery } from '../services/codeEditor.js';
 import { waitForHestiaDomain } from '../services/hestia.js';
 import { normalizeAndValidateDomain, normalizeDomainInput } from '../services/domain.js';
 import path from 'path';
@@ -536,10 +536,57 @@ export const siteRoutes: FastifyPluginAsync = async (app) => {
 
     try {
       const context = buildSiteRemoteContext(id);
-      const files = await listRemoteEditableFiles(context.connection, context.remoteRoot);
-      return { files };
+      const files = await listRemoteFiles(context.connection, context.remoteRoot);
+      return { files: describeEditorFiles(files) };
     } catch (error: any) {
       return reply.code(500).send({ error: error.message });
+    }
+  });
+
+  app.post<{ Params: { id: string }; Querystring: { dir?: string } }>('/:id/editor/files', async (request, reply) => {
+    const id = parseInt(request.params.id);
+    if (isNaN(id)) return reply.code(400).send({ error: 'Invalid id' });
+
+    const targetDir = (request.query.dir || '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    const tempRoot = path.join(os.tmpdir(), `site-factory-editor-upload-${id}-${Date.now()}`);
+
+    try {
+      const context = buildSiteRemoteContext(id);
+      fs.mkdirSync(tempRoot, { recursive: true });
+
+      let uploaded = 0;
+      for await (const part of request.parts()) {
+        if (part.type !== 'file') {
+          continue;
+        }
+
+        const incomingPath = path.posix.normalize((part.filename || '').replace(/\\/g, '/')).replace(/^\/+/, '');
+        if (!incomingPath || incomingPath === '.' || incomingPath.endsWith('/')) {
+          continue;
+        }
+
+        const localPath = path.join(tempRoot, ...incomingPath.split('/'));
+        fs.mkdirSync(path.dirname(localPath), { recursive: true });
+        fs.writeFileSync(localPath, await part.toBuffer());
+        uploaded += 1;
+      }
+
+      if (uploaded === 0) {
+        return reply.code(400).send({ error: 'No files uploaded' });
+      }
+
+      const remoteTarget = targetDir ? resolveRemoteEditorPath(context.remoteRoot, targetDir) : context.remoteRoot;
+      await uploadDirectory({
+        localDir: tempRoot,
+        remoteDir: remoteTarget,
+        server: context.connection,
+      });
+      await syncRemoteOwnership(context.connection, remoteTarget, context.ownerUser);
+      return { success: true, uploaded };
+    } catch (error: any) {
+      return reply.code(500).send({ error: error.message });
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
 
@@ -568,6 +615,20 @@ export const siteRoutes: FastifyPluginAsync = async (app) => {
     try {
       const context = buildSiteRemoteContext(id);
       await writeRemoteTextFile(context.connection, context.remoteRoot, body.path, body.content, context.ownerUser);
+      return { success: true };
+    } catch (error: any) {
+      return reply.code(500).send({ error: error.message });
+    }
+  });
+
+  app.delete<{ Params: { id: string }; Querystring: { path?: string } }>('/:id/editor/file', async (request, reply) => {
+    const id = parseInt(request.params.id);
+    if (isNaN(id)) return reply.code(400).send({ error: 'Invalid id' });
+    if (!request.query.path) return reply.code(400).send({ error: 'Path is required' });
+
+    try {
+      const context = buildSiteRemoteContext(id);
+      await deleteRemoteFile(context.connection, context.remoteRoot, request.query.path);
       return { success: true };
     } catch (error: any) {
       return reply.code(500).send({ error: error.message });

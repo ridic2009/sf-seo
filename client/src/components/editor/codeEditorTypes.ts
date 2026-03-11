@@ -16,9 +16,15 @@ export interface SearchResult {
   matches: SearchOccurrence[];
 }
 
+export interface EditorFileEntry {
+  path: string;
+  editable: boolean;
+}
+
 export interface FileTreeNode {
   name: string;
   path: string;
   type: 'directory' | 'file';
+  editable?: boolean;
   children: FileTreeNode[];
 }

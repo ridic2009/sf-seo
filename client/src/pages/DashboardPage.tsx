@@ -9,12 +9,14 @@ import {
   useReactTable,
 } from '@tanstack/react-table';
 import {
+  deleteSiteEditorFile,
   getSiteEditorFileContent,
   getSiteEditorFiles,
   getSitePreviewUrl,
   replaceSiteEditorFiles,
   saveSiteEditorFileContent,
   searchSiteEditorFiles,
+  uploadSiteEditorFiles,
   useBatchTransferSites,
   useDeleteSite,
   useDeploySite,
@@ -591,6 +593,8 @@ export function DashboardPage() {
             filesLoader={() => getSiteEditorFiles(editingSiteCode.id)}
             fileLoader={(filePath) => getSiteEditorFileContent(editingSiteCode.id, filePath)}
             fileSaver={(filePath, content) => saveSiteEditorFileContent(editingSiteCode.id, filePath, content)}
+            fileUploader={(files, targetDir) => uploadSiteEditorFiles(editingSiteCode.id, files, targetDir)}
+            fileDeleter={(filePath) => deleteSiteEditorFile(editingSiteCode.id, filePath)}
             globalSearcher={(query, options) => searchSiteEditorFiles(editingSiteCode.id, query, options)}
             globalReplacer={(query, replaceWith, options) => replaceSiteEditorFiles(editingSiteCode.id, query, replaceWith, options)}
             saveHint="Правки сохраняются сразу на удалённый сайт. Перед записью сервер делает backup изменяемого файла в .site-factory-backups."

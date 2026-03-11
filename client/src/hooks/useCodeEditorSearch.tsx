@@ -8,6 +8,7 @@ const SEARCH_DEBOUNCE_MS = 350;
 interface UseCodeEditorSearchParams {
   enabled: boolean;
   selectedFile: string;
+  selectedFileEditable: boolean;
   fileLoader: (filePath: string) => Promise<string>;
   globalSearcher: (query: string, options: GlobalSearchOptions) => Promise<{ results: SearchResult[]; files: number; matches: number }>;
   globalReplacer: (query: string, replaceWith: string, options: GlobalSearchOptions) => Promise<{ updatedFiles: number; replacements: number }>;
@@ -20,6 +21,7 @@ interface UseCodeEditorSearchParams {
 export function useCodeEditorSearch({
   enabled,
   selectedFile,
+  selectedFileEditable,
   fileLoader,
   globalSearcher,
   globalReplacer,
@@ -128,7 +130,7 @@ export function useCodeEditorSearch({
       const data = await globalReplacer(query, replaceValue, { ignoreCase, useRegex });
       toast.success(`Заменено ${data.replacements} вхождений в ${data.updatedFiles} файлах`);
       await loadFiles();
-      if (selectedFile) {
+      if (selectedFile && selectedFileEditable) {
         const reloadedContent = await fileLoader(selectedFile);
         setContent(reloadedContent);
         setSavedContent(reloadedContent);

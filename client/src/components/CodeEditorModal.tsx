@@ -1,22 +1,24 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Editor from '@monaco-editor/react';
-import { FileCode2, Loader2, RefreshCw, Save, SearchCode, X } from 'lucide-react';
+import { FileCode2, Loader2, RefreshCw, Save, SearchCode, Trash2, Upload, X } from 'lucide-react';
 import { ModalOverlay } from './ModalOverlay';
 import { IconButton } from './IconButton';
 import { useConfirmationDialog } from './ConfirmationDialog';
 import { FileTreePanel } from './editor/FileTreePanel';
 import { SearchPanel } from './editor/SearchPanel';
 import { detectLanguage } from './editor/codeEditorTree';
-import type { GlobalSearchOptions, SearchResult } from './editor/codeEditorTypes';
+import type { EditorFileEntry, GlobalSearchOptions, SearchResult } from './editor/codeEditorTypes';
 import { useCodeEditorFiles } from '../hooks/useCodeEditorFiles';
 import { useCodeEditorSearch } from '../hooks/useCodeEditorSearch';
 
 interface CodeEditorModalProps {
   title: string;
   subtitle: string;
-  filesLoader: () => Promise<string[]>;
+  filesLoader: () => Promise<EditorFileEntry[]>;
   fileLoader: (filePath: string) => Promise<string>;
   fileSaver: (filePath: string, content: string) => Promise<void>;
+  fileUploader: (files: File[], targetDir: string) => Promise<void>;
+  fileDeleter: (filePath: string) => Promise<void>;
   globalSearcher: (query: string, options: GlobalSearchOptions) => Promise<{ results: SearchResult[]; files: number; matches: number }>;
   globalReplacer: (query: string, replaceWith: string, options: GlobalSearchOptions) => Promise<{ updatedFiles: number; replacements: number }>;
   onClose: () => void;
@@ -30,6 +32,8 @@ export function CodeEditorModal({
   filesLoader,
   fileLoader,
   fileSaver,
+  fileUploader,
+  fileDeleter,
   globalSearcher,
   globalReplacer,
   onClose,
@@ -38,6 +42,8 @@ export function CodeEditorModal({
   const [sidebarTab, setSidebarTab] = useState<'files' | 'search'>('files');
   const [pendingSelection, setPendingSelection] = useState<{ filePath: string; line: number; column: number; matchLength: number } | null>(null);
   const editorRef = useRef<any>(null);
+  const uploadInputRef = useRef<HTMLInputElement | null>(null);
+  const uploadDirectoryInputRef = useRef<HTMLInputElement | null>(null);
   const { confirm, confirmationDialog } = useConfirmationDialog();
 
   const {
@@ -49,16 +55,23 @@ export function CodeEditorModal({
     loadingFiles,
     loadingFile,
     saving,
+    uploading,
+    deleting,
     search,
     setSearch,
     filteredTree,
     expandedDirSet,
     isDirty,
+    selectedFileEditable,
+    uploadTargetDir,
+    setUploadTargetDir,
     loadFiles,
     handleSelectFile,
     handleToggleDir,
     handleSave,
-  } = useCodeEditorFiles({ filesLoader, fileLoader, fileSaver, confirm });
+    handleUploadFiles,
+    handleDeleteSelectedFile,
+  } = useCodeEditorFiles({ filesLoader, fileLoader, fileSaver, fileUploader, fileDeleter, confirm });
 
   const {
     globalQuery,
@@ -79,6 +92,7 @@ export function CodeEditorModal({
   } = useCodeEditorSearch({
     enabled: sidebarTab === 'search',
     selectedFile,
+    selectedFileEditable,
     fileLoader,
     globalSearcher,
     globalReplacer,
@@ -87,6 +101,8 @@ export function CodeEditorModal({
     setSavedContent,
     confirm,
   });
+
+  const uploadTargetLabel = useMemo(() => uploadTargetDir || 'Корень проекта', [uploadTargetDir]);
 
   useEffect(() => {
     if (!pendingSelection || pendingSelection.filePath !== selectedFile || loadingFile || !editorRef.current) {
@@ -119,6 +135,30 @@ export function CodeEditorModal({
           <div className="flex items-center gap-2">
             <button
               type="button"
+              onClick={() => uploadInputRef.current?.click()}
+              disabled={uploading}
+              title={`Загрузить файлы в ${uploadTargetLabel}`}
+              className="rounded-lg border border-gray-800 px-3 py-1.5 text-sm text-gray-300 transition-colors hover:border-gray-700 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <span className="inline-flex items-center gap-2">
+                {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                Загрузить файлы
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => uploadDirectoryInputRef.current?.click()}
+              disabled={uploading}
+              title={`Загрузить папку в ${uploadTargetLabel}`}
+              className="rounded-lg border border-gray-800 px-3 py-1.5 text-sm text-gray-300 transition-colors hover:border-gray-700 hover:bg-gray-900 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <span className="inline-flex items-center gap-2">
+                {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                Загрузить папку
+              </span>
+            </button>
+            <button
+              type="button"
               onClick={loadFiles}
               className="rounded-lg border border-gray-800 px-3 py-1.5 text-sm text-gray-300 transition-colors hover:border-gray-700 hover:bg-gray-900"
             >
@@ -135,6 +175,34 @@ export function CodeEditorModal({
             </IconButton>
           </div>
         </div>
+
+        <input
+          ref={uploadInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(event) => {
+            const files = Array.from(event.target.files || []);
+            if (files.length > 0) {
+              void handleUploadFiles(files, uploadTargetDir);
+            }
+            event.currentTarget.value = '';
+          }}
+        />
+        <input
+          ref={uploadDirectoryInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          {...({ webkitdirectory: 'true', directory: 'true' } as any)}
+          onChange={(event) => {
+            const files = Array.from(event.target.files || []);
+            if (files.length > 0) {
+              void handleUploadFiles(files, uploadTargetDir);
+            }
+            event.currentTarget.value = '';
+          }}
+        />
 
         <div className="min-h-0 flex flex-1 overflow-hidden">
           <aside className="flex w-80 flex-col border-r border-gray-800 bg-gray-900/70">
@@ -172,8 +240,10 @@ export function CodeEditorModal({
                     filteredTree={filteredTree}
                     expandedDirSet={expandedDirSet}
                     selectedFile={selectedFile}
+                    selectedUploadDir={uploadTargetDir}
                     onToggleDir={handleToggleDir}
                     onSelectFile={handleSelectFile}
+                    onSelectUploadDir={setUploadTargetDir}
                   />
                 ) : (
                   <SearchPanel
@@ -207,17 +277,30 @@ export function CodeEditorModal({
             <div className="flex items-center justify-between border-b border-gray-800 px-4 py-3">
               <div className="min-w-0">
                 <div className="truncate text-sm font-medium text-gray-200">{selectedFile || 'Файл не выбран'}</div>
-                <div className="mt-1 text-xs text-gray-500">{selectedFile ? detectLanguage(selectedFile) : '—'}</div>
+                <div className="mt-1 text-xs text-gray-500">{selectedFile ? (selectedFileEditable ? detectLanguage(selectedFile) : 'Бинарный / не-текстовый файл') : '—'}</div>
               </div>
-              <button
-                type="button"
-                disabled={!selectedFile || saving || loadingFile || !isDirty}
-                onClick={handleSave}
-                className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                Сохранить
-              </button>
+              <div className="flex items-center gap-2">
+                {selectedFile && (
+                  <button
+                    type="button"
+                    disabled={deleting}
+                    onClick={() => void handleDeleteSelectedFile()}
+                    className="inline-flex items-center gap-2 rounded-lg border border-red-500/30 px-4 py-2 text-sm font-medium text-red-200 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                    Удалить
+                  </button>
+                )}
+                <button
+                  type="button"
+                  disabled={!selectedFile || !selectedFileEditable || saving || loadingFile || !isDirty}
+                  onClick={handleSave}
+                  className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  Сохранить
+                </button>
+              </div>
             </div>
 
             <div className="min-h-0 flex-1 bg-[#0b1220]">
@@ -225,7 +308,7 @@ export function CodeEditorModal({
                 <div className="flex h-full items-center justify-center text-gray-500">
                   <Loader2 className="h-6 w-6 animate-spin" />
                 </div>
-              ) : selectedFile ? (
+              ) : selectedFile && selectedFileEditable ? (
                 <Editor
                   height="100%"
                   theme="vs-dark"
@@ -244,6 +327,15 @@ export function CodeEditorModal({
                     tabSize: 2,
                   }}
                 />
+              ) : selectedFile ? (
+                <div className="flex h-full items-center justify-center p-8 text-center text-gray-500">
+                  <div className="max-w-md space-y-3">
+                    <div className="text-base font-medium text-gray-300">Файл не открыт в текстовом редакторе</div>
+                    <div className="text-sm text-gray-500">
+                      Этот файл можно хранить в шаблоне или на сайте, дозагружать и удалять прямо отсюда, но он не поддерживает текстовое редактирование в Monaco.
+                    </div>
+                  </div>
+                </div>
               ) : (
                 <div className="flex h-full items-center justify-center text-gray-500">
                   Выберите файл слева

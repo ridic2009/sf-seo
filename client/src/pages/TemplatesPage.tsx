@@ -1,13 +1,13 @@
 import { lazy, Suspense, useState } from 'react';
-import { useTemplates, useUploadTemplate, useDeleteTemplate, useTemplateSyncStatus, useSyncTemplates, useUpdateTemplate, useReplaceTemplateArchive, getTemplatePreviewUrl, getTemplateFiles, getTemplateFileContent, saveTemplateFileContent, searchTemplateFiles, replaceTemplateFiles } from '../api/templates';
-import { Upload, FileBox, Loader2, X, RefreshCw } from 'lucide-react';
+import { useTemplates, useUploadTemplate, useDeleteTemplate, useTemplateSyncStatus, useSyncTemplates, useUpdateTemplate, useReplaceTemplateArchive, deleteTemplateFile, getTemplateFiles, getTemplateFileContent, saveTemplateFileContent, searchTemplateFiles, replaceTemplateFiles, uploadTemplateFiles } from '../api/templates';
+import { Upload, FileBox, Loader2, RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
 import type { Template } from '../types';
 import { ModalOverlay } from '../components/ModalOverlay';
-import { IconButton } from '../components/IconButton';
 import { useConfirmationDialog } from '../components/ConfirmationDialog';
 import { TemplateCard } from '../components/templates/TemplateCard';
 import { TemplateEditForm } from '../components/templates/TemplateEditForm';
+import { TemplatePreviewModal } from '../components/templates/TemplatePreviewModal';
 import { TemplateUploadForm } from '../components/templates/TemplateUploadForm';
 
 const LazyCodeEditorModal = lazy(async () => {
@@ -27,7 +27,7 @@ export function TemplatesPage() {
   const [showUpload, setShowUpload] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<Template | null>(null);
   const [editingTemplateCode, setEditingTemplateCode] = useState<Template | null>(null);
-  const [selectedPreview, setSelectedPreview] = useState<{ template: Template; url: string } | null>(null);
+  const [selectedPreview, setSelectedPreview] = useState<Template | null>(null);
 
   return (
     <div className="space-y-6">
@@ -113,6 +113,8 @@ export function TemplatesPage() {
             filesLoader={() => getTemplateFiles(editingTemplateCode.id)}
             fileLoader={(filePath) => getTemplateFileContent(editingTemplateCode.id, filePath)}
             fileSaver={(filePath, content) => saveTemplateFileContent(editingTemplateCode.id, filePath, content)}
+            fileUploader={(files, targetDir) => uploadTemplateFiles(editingTemplateCode.id, files, targetDir)}
+            fileDeleter={(filePath) => deleteTemplateFile(editingTemplateCode.id, filePath)}
             globalSearcher={(query, options) => searchTemplateFiles(editingTemplateCode.id, query, options)}
             globalReplacer={(query, replaceWith, options) => replaceTemplateFiles(editingTemplateCode.id, query, replaceWith, options)}
             saveHint="Правки сохраняются в локальный шаблон. Для уже задеплоенных сайтов после этого нужен редеплой."
@@ -140,50 +142,14 @@ export function TemplatesPage() {
               onDelete={deleteTemplate}
               onEdit={setEditingTemplate}
               onCodeEdit={setEditingTemplateCode}
-              onOpenPreview={(template, url) => setSelectedPreview({ template, url })}
+              onOpenPreview={setSelectedPreview}
             />
           ))}
         </div>
       )}
 
       {selectedPreview && (
-        <ModalOverlay onClose={() => setSelectedPreview(null)} ariaLabel="Полное превью шаблона" className="z-[110] bg-black/80 p-4">
-          <div className="mx-auto flex h-full max-w-7xl flex-col rounded-2xl border border-gray-800 bg-gray-950 shadow-2xl">
-            <div className="flex items-start justify-between border-b border-gray-800 p-4">
-              <div>
-                <h2 className="text-lg font-semibold text-white">Полное превью шаблона</h2>
-                <p className="mt-1 text-sm text-gray-500">{selectedPreview.template.name}</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <a
-                  href={selectedPreview.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  aria-label="Открыть изображение шаблона в новой вкладке"
-                  className="rounded-lg border border-gray-800 px-3 py-1.5 text-sm text-gray-300 transition-colors hover:border-gray-700 hover:bg-gray-900"
-                >
-                  Открыть изображение
-                </a>
-                <IconButton
-                  onClick={() => setSelectedPreview(null)}
-                  label="Закрыть превью шаблона"
-                >
-                  <X className="w-4 h-4" />
-                </IconButton>
-              </div>
-            </div>
-
-            <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4">
-              <div className="rounded-xl border border-gray-800 bg-gray-900 p-3">
-                <img
-                  src={selectedPreview.url}
-                  alt={selectedPreview.template.name}
-                  className="h-auto w-full rounded-lg"
-                />
-              </div>
-            </div>
-          </div>
-        </ModalOverlay>
+        <TemplatePreviewModal template={selectedPreview} onClose={() => setSelectedPreview(null)} />
       )}
 
       {confirmationDialog}

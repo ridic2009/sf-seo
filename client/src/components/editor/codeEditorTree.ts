@@ -1,4 +1,11 @@
-import type { FileTreeNode, GlobalSearchOptions } from './codeEditorTypes';
+import type { EditorFileEntry, FileTreeNode, GlobalSearchOptions } from './codeEditorTypes';
+
+const EDITABLE_TEXT_EXTENSIONS = new Set([
+  '.html', '.htm', '.css', '.js', '.json', '.xml', '.txt', '.svg',
+  '.php', '.md', '.yaml', '.yml', '.toml', '.conf', '.map',
+  '.htaccess', '.mjs', '.cjs', '.ts', '.jsx', '.tsx', '.tpl',
+  '.scss', '.sass', '.less', '.env', '.ini', '.sql', '.csv',
+]);
 
 export function createPreviewPattern(query: string, options: GlobalSearchOptions): RegExp | null {
   if (!query) {
@@ -28,6 +35,15 @@ export function detectLanguage(filePath: string): string {
   return 'plaintext';
 }
 
+export function isEditableClientFile(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, '/');
+  const fileName = normalized.split('/').pop() || normalized;
+  const extMatch = /\.[^.]+$/.exec(fileName.toLowerCase());
+  const ext = extMatch?.[0] || '';
+
+  return EDITABLE_TEXT_EXTENSIONS.has(ext) || fileName.startsWith('.') || !ext;
+}
+
 function createDirectoryNode(name: string, nodePath: string): FileTreeNode {
   return {
     name,
@@ -37,10 +53,11 @@ function createDirectoryNode(name: string, nodePath: string): FileTreeNode {
   };
 }
 
-export function buildFileTree(files: string[]): FileTreeNode[] {
+export function buildFileTree(files: EditorFileEntry[]): FileTreeNode[] {
   const root = createDirectoryNode('', '');
 
-  for (const filePath of files) {
+  for (const file of files) {
+    const filePath = file.path;
     const parts = filePath.split('/').filter(Boolean);
     let current = root;
 
@@ -52,7 +69,7 @@ export function buildFileTree(files: string[]): FileTreeNode[] {
       let nextNode = current.children.find((child) => child.name === part && child.type === (isFile ? 'file' : 'directory'));
       if (!nextNode) {
         nextNode = isFile
-          ? { name: part, path: currentPath, type: 'file', children: [] }
+          ? { name: part, path: currentPath, type: 'file', editable: file.editable, children: [] }
           : createDirectoryNode(part, currentPath);
         current.children.push(nextNode);
       }
