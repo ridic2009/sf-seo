@@ -148,7 +148,7 @@ function getTemplatePreviewFile(templateDir: string): string | null {
 }
 
 function getTemplateLiveEntryPath(templateDir: string, requestedPath = ''): string | null {
-  const normalizedPath = requestedPath.replace(/\\/g, '/').replace(/^\/+/, '');
+  const normalizedPath = decodeURIComponent(requestedPath).replace(/\\/g, '/').replace(/^\/+/, '');
   const resolvedPath = normalizedPath ? resolveLocalEditorPath(templateDir, normalizedPath) : templateDir;
 
   if (!fs.existsSync(resolvedPath)) {
@@ -248,9 +248,10 @@ function rewriteLivePreviewHtml(content: string, templateId: number) {
   const liveBasePath = getTemplateLiveBasePath(templateId);
   const baseTag = `<base href="${liveBasePath}">`;
   const runtimeScript = createLivePreviewRuntimeScript(templateId);
-  const withHeadInjection = /<base\s/i.test(content)
-    ? injectIntoHtmlDocument(content, runtimeScript)
-    : injectIntoHtmlDocument(content, `${baseTag}${runtimeScript}`);
+  const contentWithBase = /<base\s/i.test(content)
+    ? content.replace(/<base\b[^>]*href=(['"])[^'"]*\1[^>]*>/i, baseTag)
+    : injectIntoHtmlDocument(content, baseTag);
+  const withHeadInjection = injectIntoHtmlDocument(contentWithBase, runtimeScript);
 
   return withHeadInjection
     .replace(/\b(href|src|poster|data|action|formaction)=(["'])(.*?)\2/gi, (match, attribute, quote, value) => {
