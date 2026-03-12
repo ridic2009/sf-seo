@@ -4,10 +4,23 @@ import { servers, sites } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import fs from 'fs';
 import path from 'path';
-import { createServerBackup, deleteServerBackup, discoverAllServerSites, getServerBackupPath, initializeServerBackup, listServerBackups, markServerBackupError } from '../services/serverBackup.js';
+import { createServerBackup, deleteServerBackup, discoverAllServerSites, getServerBackupPath, hasRunningServerBackup, initializeServerBackup, listServerBackups, markServerBackupError } from '../services/serverBackup.js';
 import type { ServerBackupSite } from '../services/serverBackup.js';
 import { applyBulkRemoteSiteReplace, previewBulkRemoteSiteReplace } from '../services/remoteFiles.js';
 import { validateSearchQuery } from '../services/codeEditor.js';
+
+function normalizeBackupScheduleMode(value: unknown): 'managed' | 'all' {
+  return value === 'all' ? 'all' : 'managed';
+}
+
+function normalizeBackupScheduleIntervalHours(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 24;
+  }
+
+  return Math.min(24 * 30, Math.max(1, Math.round(parsed)));
+}
 
 function isSearchInputError(message?: string): boolean {
   return Boolean(message && (message.includes('Invalid regular expression') || message.includes('Regex must not match empty strings')));
@@ -111,6 +124,10 @@ export const serverRoutes: FastifyPluginAsync = async (app) => {
         panelUser: body.panelUser ?? null,
         panelPassword: body.panelPassword ?? null,
         isActive: body.isActive ?? true,
+        backupScheduleEnabled: body.backupScheduleEnabled ?? false,
+        backupScheduleMode: normalizeBackupScheduleMode(body.backupScheduleMode),
+        backupScheduleIntervalHours: normalizeBackupScheduleIntervalHours(body.backupScheduleIntervalHours),
+        backupScheduleLastRunAt: body.backupScheduleEnabled ? new Date().toISOString() : null,
       })
       .returning()
       .get();
@@ -134,6 +151,21 @@ export const serverRoutes: FastifyPluginAsync = async (app) => {
     ];
     for (const f of fields) {
       if (body[f] !== undefined) updateData[f] = body[f];
+    }
+    if (body.backupScheduleEnabled !== undefined) {
+      updateData.backupScheduleEnabled = Boolean(body.backupScheduleEnabled);
+    }
+    if (body.backupScheduleMode !== undefined) {
+      updateData.backupScheduleMode = normalizeBackupScheduleMode(body.backupScheduleMode);
+    }
+    if (body.backupScheduleIntervalHours !== undefined) {
+      updateData.backupScheduleIntervalHours = normalizeBackupScheduleIntervalHours(body.backupScheduleIntervalHours);
+    }
+    if (body.backupScheduleLastRunAt !== undefined) {
+      updateData.backupScheduleLastRunAt = body.backupScheduleLastRunAt || null;
+    }
+    if (body.backupScheduleEnabled === true && !existing.backupScheduleEnabled && body.backupScheduleLastRunAt === undefined) {
+      updateData.backupScheduleLastRunAt = new Date().toISOString();
     }
     // Only update credentials if explicitly provided (not '***')
     if (body.password && body.password !== '***') updateData.password = body.password;
@@ -430,6 +462,10 @@ export const serverRoutes: FastifyPluginAsync = async (app) => {
           ? 'Не удалось найти сайты на сервере для полного бэкапа'
           : 'На этом сервере нет сайтов, привязанных в приложении',
       });
+    }
+
+    if (hasRunningServerBackup(server.id)) {
+      return reply.code(409).send({ error: 'Для этого сервера уже выполняется бэкап' });
     }
 
     try {

@@ -84,7 +84,7 @@ export function DashboardPage() {
 
   const [sorting, setSorting] = useState<SortingState>([]);
   const [selectedLogSiteId, setSelectedLogSiteId] = useState<number | null>(null);
-  const [selectedPreview, setSelectedPreview] = useState<{ site: Site; url: string } | null>(null);
+  const [selectedPreview, setSelectedPreview] = useState<{ site: Site } | null>(null);
   const [editingSiteCode, setEditingSiteCode] = useState<Site | null>(null);
   const [templateReplacementSite, setTemplateReplacementSite] = useState<Site | null>(null);
   const [replacementTemplateId, setReplacementTemplateId] = useState(0);
@@ -277,7 +277,7 @@ export function DashboardPage() {
           const site = info.row.original;
           return (
             <div className="flex items-center gap-3">
-              <TemplatePreview site={site} onOpen={(previewSite, url) => setSelectedPreview({ site: previewSite, url })} />
+              <TemplatePreview site={site} onOpen={(previewSite) => setSelectedPreview({ site: previewSite })} />
               <div>
                 <div className="text-sm text-gray-200">{info.getValue() || '—'}</div>
                 <div className="mt-0.5 text-xs text-gray-500">ID шаблона: {site.templateId || '—'}</div>
@@ -348,7 +348,7 @@ export function DashboardPage() {
               {row.deployStep && (
                 <div className="text-xs text-gray-500">{row.deployStep}</div>
               )}
-              {row.previewError && row.status === 'deployed' && (
+              {row.previewError && row.status === 'deployed' && !row.previewError.startsWith('Не удалось снять screenshot:') && (
                 <div className="line-clamp-3 max-w-[260px] break-words text-xs text-amber-400" title={row.previewError}>{row.previewError}</div>
               )}
               {row.errorMessage && (

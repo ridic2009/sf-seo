@@ -4,6 +4,8 @@ import toast from 'react-hot-toast';
 import { useDeleteServer, useTestServer } from '../../api/servers';
 import { useApiErrorMessage } from '../../hooks/useApiErrorMessage';
 import type { Server } from '../../types';
+import { formatBackupScheduleInterval, formatBackupScheduleMode, getBackupScheduleNextRun } from '../../utils/backupSchedule';
+import { formatRuDateTime } from '../../utils/format';
 import { getServerPanelUrl } from '../../utils/serverPanel';
 import { useConfirmationDialog } from '../ConfirmationDialog';
 import { IconButton } from '../IconButton';
@@ -47,6 +49,9 @@ export function ServerCard({ server, onEdit, onDelete, onTest }: ServerCardProps
 
   const panelLabel = PANEL_TYPES.find((panel) => panel.value === server.panelType)?.label || server.panelType;
   const panelUrl = getServerPanelUrl(server);
+  const nextRun = server.backupScheduleEnabled
+    ? getBackupScheduleNextRun(server.backupScheduleLastRunAt, server.backupScheduleIntervalHours)
+    : null;
 
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 hover:border-gray-700 transition-colors">
@@ -134,6 +139,17 @@ export function ServerCard({ server, onEdit, onDelete, onTest }: ServerCardProps
 
       <div className="mt-3 pt-3 border-t border-gray-800">
         <span className="text-gray-600 text-xs font-mono break-all">{server.webRootPattern}</span>
+      </div>
+
+      <div className="mt-3 rounded-lg border border-gray-800 bg-gray-950/50 p-3 text-xs text-gray-400">
+        <div className="flex items-center justify-between gap-3">
+          <span className="font-medium text-gray-300">Автобэкапы</span>
+          <span className={`rounded-full px-2 py-1 ${server.backupScheduleEnabled ? 'border border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : 'border border-gray-800 text-gray-500'}`}>
+            {server.backupScheduleEnabled ? formatBackupScheduleInterval(server.backupScheduleIntervalHours) : 'Выключены'}
+          </span>
+        </div>
+        <div className="mt-2">Режим: {formatBackupScheduleMode(server.backupScheduleMode)}</div>
+        <div className="mt-1">Следующий запуск: {nextRun ? formatRuDateTime(nextRun.toISOString()) : 'нет'}</div>
       </div>
 
       {confirmationDialog}

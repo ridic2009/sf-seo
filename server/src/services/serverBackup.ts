@@ -6,6 +6,7 @@ import type { ServerConnectionConfig } from './deployer.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BACKUPS_DIR = path.resolve(__dirname, '../../data/backups');
+const DEFAULT_BACKUP_RETENTION_DAYS = Math.max(1, Number(process.env.BACKUP_RETENTION_DAYS || 31));
 
 export interface ServerBackupSite {
   domain: string;
@@ -50,6 +51,10 @@ export interface CreatedServerBackup {
 }
 
 export interface StoredServerBackup extends CreatedServerBackup {}
+
+interface RemoteStreamDownloadResult {
+  method: 'sftp' | 'ssh-stream';
+}
 
 function shellEscape(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
@@ -146,6 +151,80 @@ function downloadFileViaSftp(conn: SSHClient, remoteFilePath: string, localFileP
       });
     });
   });
+}
+
+function downloadFileViaSshStream(conn: SSHClient, remoteFilePath: string, localFilePath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const tempFilePath = `${localFilePath}.part`;
+    const output = fs.createWriteStream(tempFilePath);
+    let settled = false;
+    let stderr = '';
+
+    const fail = (error: Error) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      output.destroy();
+      fs.rmSync(tempFilePath, { force: true });
+      reject(error);
+    };
+
+    conn.exec(`cat ${shellEscape(remoteFilePath)}`, (err, stream) => {
+      if (err) {
+        fail(err);
+        return;
+      }
+
+      stream.stderr.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+
+      output.on('error', (writeError) => {
+        stream.destroy();
+        fail(writeError);
+      });
+
+      stream.on('error', (streamError: Error) => {
+        fail(streamError);
+      });
+
+      stream.pipe(output);
+
+      stream.on('close', (code: number | undefined) => {
+        if (settled) {
+          return;
+        }
+
+        output.end(async () => {
+          if (code && code !== 0) {
+            fail(new Error(stderr || `Remote download failed with exit code ${code}`));
+            return;
+          }
+
+          try {
+            fs.renameSync(tempFilePath, localFilePath);
+            settled = true;
+            resolve();
+          } catch (renameError) {
+            fail(renameError as Error);
+          }
+        });
+      });
+    });
+  });
+}
+
+async function downloadRemoteArchive(conn: SSHClient, remoteFilePath: string, localFilePath: string): Promise<RemoteStreamDownloadResult> {
+  try {
+    await downloadFileViaSftp(conn, remoteFilePath, localFilePath);
+    return { method: 'sftp' };
+  } catch (error) {
+    fs.rmSync(localFilePath, { force: true });
+    await downloadFileViaSshStream(conn, remoteFilePath, localFilePath);
+    return { method: 'ssh-stream' };
+  }
 }
 
 function parseTabSeparatedSites(output: string): ServerBackupSite[] {
@@ -364,6 +443,10 @@ export function listServerBackups(serverId?: number): StoredServerBackup[] {
   return backups.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
+export function hasRunningServerBackup(serverId: number): boolean {
+  return listServerBackups(serverId).some((backup) => backup.status === 'running');
+}
+
 export function deleteServerBackup(serverId: number, fileName: string) {
   const archivePath = getServerBackupPath(serverId, fileName);
   const metaPath = getServerBackupMetaPath(serverId, fileName);
@@ -375,6 +458,45 @@ export function deleteServerBackup(serverId: number, fileName: string) {
   if (fs.existsSync(metaPath)) {
     fs.rmSync(metaPath, { force: true });
   }
+}
+
+export function purgeExpiredServerBackups(retentionDays = DEFAULT_BACKUP_RETENTION_DAYS): number {
+  if (!fs.existsSync(BACKUPS_DIR)) {
+    return 0;
+  }
+
+  const cutoffTime = Date.now() - Math.max(1, retentionDays) * 24 * 60 * 60 * 1000;
+  let deletedCount = 0;
+
+  for (const serverDirEntry of fs.readdirSync(BACKUPS_DIR)) {
+    const serverDirPath = path.join(BACKUPS_DIR, serverDirEntry);
+    if (!fs.existsSync(serverDirPath) || !fs.statSync(serverDirPath).isDirectory()) {
+      continue;
+    }
+
+    for (const entry of fs.readdirSync(serverDirPath)) {
+      if (!entry.endsWith('.json')) {
+        continue;
+      }
+
+      const metaPath = path.join(serverDirPath, entry);
+
+      try {
+        const parsed = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as StoredServerBackup;
+        const createdAtTime = Date.parse(parsed.createdAt);
+        if (!Number.isFinite(createdAtTime) || createdAtTime > cutoffTime) {
+          continue;
+        }
+
+        deleteServerBackup(parsed.serverId, parsed.fileName);
+        deletedCount += 1;
+      } catch {
+        // ignore broken metadata files during retention cleanup
+      }
+    }
+  }
+
+  return deletedCount;
 }
 
 export function initializeServerBackup(options: CreateServerBackupOptions): StoredServerBackup {
@@ -435,7 +557,15 @@ export async function createServerBackup(backup: StoredServerBackup, options: Cr
       stage: 'Скачивание архива',
       errorMessage: null,
     });
-    await downloadFileViaSftp(conn, remoteArchivePath, localFilePath);
+    const downloadResult = await downloadRemoteArchive(conn, remoteArchivePath, localFilePath);
+
+    if (downloadResult.method === 'ssh-stream') {
+      backup = updateBackupMetadata(backup, {
+        status: 'running',
+        stage: 'Архив скачан по SSH без SFTP',
+        errorMessage: null,
+      });
+    }
   } finally {
     try {
       await executeSSHCommandWithConnection(

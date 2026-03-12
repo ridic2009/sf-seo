@@ -13,6 +13,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { getAuthenticatedSession, getAuthConfig, isPublicApiPath } from './services/auth.js';
+import { startBackupScheduler } from './services/backupScheduler.js';
 
 dotenv.config();
 
@@ -98,6 +99,7 @@ async function start() {
   const port = parseInt(process.env.PORT || '3001');
   const host = process.env.HOST || '0.0.0.0';
   await app.listen({ port, host });
+  startBackupScheduler(app.log);
   app.log.info(`Auth enabled for admin user ${authConfig.username}`);
   console.log(`Site Factory server running at http://localhost:${port}`);
 }

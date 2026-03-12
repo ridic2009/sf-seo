@@ -172,12 +172,32 @@ function getTemplateLiveBasePath(templateId: number) {
   return `/api/templates/${templateId}/live/`;
 }
 
-function rewriteRootRelativeValue(value: string, liveBasePath: string) {
-  if (!value.startsWith('/') || value.startsWith('//')) {
-    return value;
+function normalizeAlreadyRewrittenLiveValue(value: string, liveBasePath: string) {
+  const liveBaseWithoutLeadingSlash = liveBasePath.replace(/^\/+/, '');
+
+  if (value === liveBaseWithoutLeadingSlash.slice(0, -1)) {
+    return liveBasePath;
   }
 
-  return `${liveBasePath}${value.slice(1)}`;
+  if (value.startsWith(liveBaseWithoutLeadingSlash)) {
+    return `/${value}`;
+  }
+
+  return value;
+}
+
+function rewriteRootRelativeValue(value: string, liveBasePath: string) {
+  const normalizedValue = normalizeAlreadyRewrittenLiveValue(value, liveBasePath);
+
+  if (normalizedValue.startsWith(liveBasePath) || normalizedValue.startsWith('//')) {
+    return normalizedValue;
+  }
+
+  if (!normalizedValue.startsWith('/')) {
+    return normalizedValue;
+  }
+
+  return `${liveBasePath}${normalizedValue.slice(1)}`;
 }
 
 function rewriteSrcsetValue(value: string, liveBasePath: string) {
@@ -212,7 +232,9 @@ function createLivePreviewRuntimeScript(templateId: number) {
   var liveBasePath=${escapedBasePath};
   function rewrite(value){
     if(typeof value!=="string") return value;
-    if(!value.startsWith("/")||value.startsWith("//")) return value;
+    if(value.startsWith(liveBasePath)||value.startsWith("//")) return value;
+    if(value.startsWith(liveBasePath.slice(1))) return "/"+value;
+    if(!value.startsWith("/")) return value;
     return liveBasePath+value.slice(1);
   }
   var originalFetch=window.fetch;
@@ -248,10 +270,11 @@ function rewriteLivePreviewHtml(content: string, templateId: number) {
   const liveBasePath = getTemplateLiveBasePath(templateId);
   const baseTag = `<base href="${liveBasePath}">`;
   const runtimeScript = createLivePreviewRuntimeScript(templateId);
-  const contentWithBase = /<base\s/i.test(content)
-    ? content.replace(/<base\b[^>]*href=(['"])[^'"]*\1[^>]*>/i, baseTag)
-    : injectIntoHtmlDocument(content, baseTag);
-  const withHeadInjection = injectIntoHtmlDocument(contentWithBase, runtimeScript);
+  const basePlaceholder = '<meta name="site-factory-live-base" content="__SITE_FACTORY_LIVE_BASE__">';
+  const contentWithBasePlaceholder = /<base\s/i.test(content)
+    ? content.replace(/<base\b[^>]*href=(['"])[^'"]*\1[^>]*>/i, basePlaceholder)
+    : injectIntoHtmlDocument(content, basePlaceholder);
+  const withHeadInjection = injectIntoHtmlDocument(contentWithBasePlaceholder, runtimeScript);
 
   return withHeadInjection
     .replace(/\b(href|src|poster|data|action|formaction)=(["'])(.*?)\2/gi, (match, attribute, quote, value) => {
@@ -265,14 +288,20 @@ function rewriteLivePreviewHtml(content: string, templateId: number) {
     })
     .replace(/<style\b([^>]*)>([\s\S]*?)<\/style>/gi, (match, attributes, cssContent) => {
       return `<style${attributes}>${rewriteLivePreviewCss(cssContent, templateId)}</style>`;
-    });
+    })
+    .replace(basePlaceholder, baseTag);
 }
 
 function rewriteLivePreviewCss(content: string, templateId: number) {
   const liveBasePath = getTemplateLiveBasePath(templateId);
   return content
-    .replace(/url\((['"]?)\/(?!\/)/gi, `url($1${liveBasePath}`)
-    .replace(/(@import\s+(?:url\()?["'])\/(?!\/)/gi, `$1${liveBasePath}`);
+    .replace(/url\((['"]?)(.*?)\1\)/gi, (match, quote, value) => {
+      const rewrittenValue = rewriteRootRelativeValue(value.trim(), liveBasePath);
+      return `url(${quote}${rewrittenValue}${quote})`;
+    })
+    .replace(/(@import\s+(?:url\()?['"])(.*?)(['"]\)?)/gi, (match, prefix, value, suffix) => {
+      return `${prefix}${rewriteRootRelativeValue(value.trim(), liveBasePath)}${suffix}`;
+    });
 }
 
 function sendLivePreviewError(reply: any, statusCode: number, title: string, description: string) {

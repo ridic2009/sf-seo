@@ -48,6 +48,10 @@ export function initializeDatabase() {
       panel_user TEXT,
       panel_password TEXT,
       is_active INTEGER NOT NULL DEFAULT 1,
+      backup_schedule_enabled INTEGER NOT NULL DEFAULT 0,
+      backup_schedule_mode TEXT NOT NULL DEFAULT 'managed',
+      backup_schedule_interval_hours INTEGER NOT NULL DEFAULT 24,
+      backup_schedule_last_run_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -116,6 +120,30 @@ export function initializeDatabase() {
 
   try {
     sqlite.exec(`ALTER TABLE sites ADD COLUMN preview_error TEXT`);
+  } catch {
+    // Column already exists
+  }
+
+  try {
+    sqlite.exec(`ALTER TABLE servers ADD COLUMN backup_schedule_enabled INTEGER NOT NULL DEFAULT 0`);
+  } catch {
+    // Column already exists
+  }
+
+  try {
+    sqlite.exec(`ALTER TABLE servers ADD COLUMN backup_schedule_mode TEXT NOT NULL DEFAULT 'managed'`);
+  } catch {
+    // Column already exists
+  }
+
+  try {
+    sqlite.exec(`ALTER TABLE servers ADD COLUMN backup_schedule_interval_hours INTEGER NOT NULL DEFAULT 24`);
+  } catch {
+    // Column already exists
+  }
+
+  try {
+    sqlite.exec(`ALTER TABLE servers ADD COLUMN backup_schedule_last_run_at TEXT`);
   } catch {
     // Column already exists
   }

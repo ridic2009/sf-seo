@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm';
 import { processTemplate } from '../services/templater.js';
 import { uploadDirectory, executeSSHCommand, clearRemoteDirectory, syncRemoteOwnership, type DeployProgressEvent } from '../services/deployer.js';
 import { getPanelAdapter } from '../panels/index.js';
-import { captureSitePreview, getSitePreviewImagePath, readSitePreviewMeta } from '../services/sitePreview.js';
+import { captureSitePreview, getSitePreviewImagePath, readSitePreviewMeta, type SitePreviewMeta } from '../services/sitePreview.js';
 import { deleteRemoteFile, listRemoteFiles, readRemoteTextFile, writeRemoteTextFile, searchRemoteFiles, replaceRemoteFiles } from '../services/remoteFiles.js';
 import { describeEditorFiles, resolveRemoteEditorPath, validateSearchQuery } from '../services/codeEditor.js';
 import { waitForHestiaDomain } from '../services/hestia.js';
@@ -16,6 +16,42 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const SITE_PREVIEW_CONCURRENCY = Math.max(1, Number(process.env.SITE_PREVIEW_CONCURRENCY || 2));
+const inFlightSitePreviewRefreshes = new Map<number, Promise<SitePreviewMeta>>();
+const pendingSitePreviewSlots: Array<() => void> = [];
+let activeSitePreviewRefreshes = 0;
+
+function acquireSitePreviewSlot() {
+  if (activeSitePreviewRefreshes < SITE_PREVIEW_CONCURRENCY) {
+    activeSitePreviewRefreshes += 1;
+    return Promise.resolve();
+  }
+
+  return new Promise<void>((resolve) => {
+    pendingSitePreviewSlots.push(() => {
+      activeSitePreviewRefreshes += 1;
+      resolve();
+    });
+  });
+}
+
+function releaseSitePreviewSlot() {
+  activeSitePreviewRefreshes = Math.max(0, activeSitePreviewRefreshes - 1);
+  const next = pendingSitePreviewSlots.shift();
+  if (next) {
+    next();
+  }
+}
+
+async function runSitePreviewRefresh(task: () => Promise<SitePreviewMeta>) {
+  await acquireSitePreviewSlot();
+
+  try {
+    return await task();
+  } finally {
+    releaseSitePreviewSlot();
+  }
+}
 
 function isSearchInputError(message?: string): boolean {
   return Boolean(message && (message.includes('Invalid regular expression') || message.includes('Regex must not match empty strings')));
@@ -122,6 +158,12 @@ async function checkHestiaDomainRegistration(server: typeof servers.$inferSelect
 }
 
 async function refreshSitePreview(siteId: number) {
+  const existingRefresh = inFlightSitePreviewRefreshes.get(siteId);
+  if (existingRefresh) {
+    return existingRefresh;
+  }
+
+  const refreshPromise = runSitePreviewRefresh(async () => {
   const site = db.select().from(sites).where(eq(sites.id, siteId)).get();
   if (!site) {
     throw new Error('Site not found');
@@ -166,6 +208,13 @@ async function refreshSitePreview(siteId: number) {
 
     throw new Error(previewErrorMessage);
   }
+  });
+
+  inFlightSitePreviewRefreshes.set(siteId, refreshPromise);
+
+  return refreshPromise.finally(() => {
+    inFlightSitePreviewRefreshes.delete(siteId);
+  });
 }
 
 interface DeploySiteOptions {
@@ -509,7 +558,8 @@ export const siteRoutes: FastifyPluginAsync = async (app) => {
     if (!site) return reply.code(404).send({ error: 'Site not found' });
 
     const imagePath = getSitePreviewImagePath(id);
-    const shouldRefresh = request.query.refresh === '1' || !fs.existsSync(imagePath);
+    const hasPreviewImage = fs.existsSync(imagePath);
+    const shouldRefresh = request.query.refresh === '1';
 
     if (shouldRefresh) {
       try {
@@ -519,6 +569,10 @@ export const siteRoutes: FastifyPluginAsync = async (app) => {
           return reply.code(502).send({ error: error.message });
         }
       }
+    }
+
+    if (!hasPreviewImage && !shouldRefresh) {
+      return reply.code(404).send({ error: site.previewError || 'Preview not found' });
     }
 
     if (!fs.existsSync(imagePath)) {

@@ -25,6 +25,10 @@ export interface Server {
   panelUser: string | null;
   panelPassword: string | null;
   isActive: boolean;
+  backupScheduleEnabled: boolean;
+  backupScheduleMode: 'managed' | 'all';
+  backupScheduleIntervalHours: number;
+  backupScheduleLastRunAt: string | null;
   createdAt: string;
 }
 

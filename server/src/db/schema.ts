@@ -30,6 +30,10 @@ export const servers = sqliteTable('servers', {
   panelUser: text('panel_user'),
   panelPassword: text('panel_password'),
   isActive: integer('is_active', { mode: 'boolean' }).notNull().default(true),
+  backupScheduleEnabled: integer('backup_schedule_enabled', { mode: 'boolean' }).notNull().default(false),
+  backupScheduleMode: text('backup_schedule_mode').notNull().default('managed'),
+  backupScheduleIntervalHours: integer('backup_schedule_interval_hours').notNull().default(24),
+  backupScheduleLastRunAt: text('backup_schedule_last_run_at'),
   createdAt: text('created_at').notNull().default(sql`(datetime('now'))`),
 });
 
